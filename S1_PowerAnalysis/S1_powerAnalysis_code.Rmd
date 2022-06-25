@@ -1,0 +1,1151 @@
+---
+title: "Workplace stress in real time: Three parsimonious scales for the experience sampling measurement of stressors and strain at work"
+subtitle: "Supplementary material S1: A priori power analysis report"
+date: "`r Sys.Date()`"
+bibliography: [packagesPowerAn.bib]
+nocite: '@*'
+output: 
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    css: styles.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+rm(list=ls())
+```
+
+# Aims and contents
+
+The document includes the R code used to simulate the data for the a priori power analysis performed before terminating data collection. Our goal was to establish a 'reasonable' sample size to evaluate the factor structure of the proposed set of ESM scales.
+
+<br>
+
+The following R packages are used in this document (see References section):
+```{r eval=FALSE}
+# required packages
+packages <- c("ggplot2","gridExtra","lavaan","MASS","reshape2","stringr")
+
+# # run to install required packages
+# xfun::pkg_attach2(packages, message = FALSE); rm(list=ls())
+
+# generate packages references
+knitr::write_bib(c(.packages(), packages),"packagesPowerAn.bib")
+```
+
+<br>
+
+# 1. Pipeline & Functions
+
+## 1.1. Simulation pipeline
+
+As noted above, our power analysis focused on **multilevel confirmatory factor analysis (MCFA)** models, identified as the most demanding analysis in terms of computational effort and number of estimated parameters. 
+
+Some previous work proposed minumum sample size criteria for MCFA ranging from **100+ clusters** (i.e., participants) (Hox & Maas 2001) to **100+ clusters x 10+ observations per cluster** (Hsu et al 2015), whereas traditional (i.e., mono-level) SEM literature often recommended sample sizes of **200+ participants** for obtaining unbiased and consistent parameters using ML estimation (e.g., Boomsma, 1987; Loehlin, 2004).
+
+<br>
+
+### 1.1.1. Rationale
+
+The core rationale of our power analysis relies on the arbitrary definition of **statistical power** as the *percentage of MCFA models in which all standardized loadings were significantly higher (p < .05) than the arbitrary chosen* **cut-off value of .15**, *at both levels*. We considered a statistical power of **80% or above** as adequate for our purpose.
+
+<br>
+
+### 1.1.2. Procedure
+
+The Monte Carlo approach  was used to randomly simulate **10,000 samples** for each of combination of the following parameters:
+
+- **Sample size at level 2 (N_2, i.e., number of participants)**: 50, 100, 150, 200, 250, 300, 350, 400, 500, 800, 1000
+
+- **Sample size at level 1 (N_1, i.e., number of occasions per participant)**: 5, 10, 15, 21
+
+- **Population values of the standardized loadings**: .40, .60, .80
+
+<br>
+
+Note that standardized loadings were fixed to have the same value for all items, and at both levels.
+
+<br>
+
+Specifically, the functions showed below were used to **simulate two datasets**: a level-2 dataset (with N2 rows) and a level-1 dataset (with N1 rows). In each simulation, the two datasets were generated based on the same **population models**, defined as follows.
+
+<br>
+
+#### Population models
+
+- **Task Demand Scale (TDS)**: 
+```{r }
+TDS_model.pop <- 'TD =~ LOAD*x1 + LOAD*x2 + LOAD*x3 + LOAD*x4'
+```
+
+- **Task Control Scale (TCS)**: 
+```{r }
+TCS_model.pop <- 'TD =~ LOAD*x1 + LOAD*x2 + LOAD*x3'
+```
+
+- **Multidimensional Mood Questionnaire (MDMQ)**:
+```{r }
+MDMQ_model.pop <- 'NegativeValence =~ LOAD*x1 + LOAD*x2 + LOAD*x3
+                   TenseArousal =~ LOAD*x4 + LOAD*x5 + LOAD*x6
+                   Fatigue =~ LOAD*x7 + LOAD*x8 + LOAD*x9
+                   # Correlations between latent vars (based on Wilhelm & Schoebi)
+                   NegativeValence ~~ .80 * TenseArousal
+                   TenseArousal ~~ .59 * Fatigue
+                   Fatigue ~~ .70 * NegativeValence'
+```
+
+*LOAD* is the pre-set loading value (i.e., .40, .60, .80; using the same value for all items), *x1, …, x9* are the scores to each item of each scale, and the *=~* and *~~* symbols stand for “is manifested by” and “correlates with”, respectively.
+
+For the MDMQ, correlations between latent factors were set based on those reported by Wilhelm & Schoebi (2007) at the between level. Only in the case of the correlation between Negative Valence and Tense Arousal, we used the parameter reported at the within level, since the authors were unable to distinguish the two dimensions at level 2 (the reported correlation was .99), whereas we hypothesized a three-factor model at both levels for our version of the MDMQ.
+
+<br>
+
+#### Multilevel data merging
+
+Second, the two simulated level-1 and level-2 datasets were merged based on the basic rationale of multilevel data structure. In a univariate intercept-only multilevel framework, this would be:
+
+$$
+y_{ij} = \mu + u_j + e_{ij}
+$$
+
+In which the observed variable *y* for observation *i* from participant *j* is a sum of 3 components:
+
+- *mu* = grand mean of participant means,
+
+- *u_j* = deviation of participant j’s mean from mu (best linear unbiased predictors, BLUPS),
+
+- *e_{ij}* = deviation of observation i’s score from participant j’s mean
+
+With *u_j* and *e_{ij}* being both normally distributed with means = 0 and variances = *tau*^2 for participants, and *sigma*^2 for occasions within participant, it is possible to simulate data for *N_2* participants by generating *N_2* participant means from a normal distribution with mean = *mu* and SD = *tau*:
+```{r }
+# POPULATION PARAMETERS
+N_2 <- 100 # number of participants
+mu = 0 # grand mean of participant means (zero since we consider standardized scores)
+tau = 1 # participant' standard deviation
+
+# SIMULATION
+U <- rnorm(N_2, m = 0, sd = tau)
+(cMeans <- mu + U)[1:5] # showing first 5 values
+```
+
+Then, it is possible to loop over participants to generate level-1 residuals for *N_1* occasions within each participant, to be added to the participant mean.
+```{r }
+# POPULATION PARAMETERS
+N_1 <- 21 # number of data points within each cluster
+sigma = 1 # within-cluster observations' standard deviation
+
+# SIMULATION
+dataList <- list()
+for (cl in 1:N_2) {
+  e <- rnorm(N_1, m = 0, sd = sigma)
+  dataList[[cl]] <- cMeans[cl] + e }
+
+# showing data generated for the first two participants
+dataList[[1]]; dataList[[2]]
+```
+
+A similar procedure was applied at a multivariate level using a vector of item mean scores instead of *mu*, the level-1 and level-2 covariance matrices described above instead of *tau* and *sigma*, and the *MASS::mvrnorm* function instead of *rnorm*.
+
+<br>
+
+*Credit*: this procedure was implemented thanks to the suggestions by **Prof. Terrence Jorgensen** on the lavaan Google group: https://groups.google.com/g/lavaan/c/4V-MGo7qkgA/m/3O5VpFaDAgAJ
+
+<br>
+
+#### Parameter estimation
+
+Following each simulation, the following hypothesized configural cluster models were fitted on the simulated multilevel dataset:
+
+- **Task Demand Scale (TDS)**: 
+```{r }
+TDS_multilvModel <- 'level: 1
+                     TD_within =~ x1 + x2 + x3 + x4
+                     level: 2
+                     TD_between =~ x1 + x2 + x3 + x4'
+```
+
+- **Task Control Scale (TCS)**: 
+```{r }
+TCS_multilvModel <- 'level: 1
+                     TC_within =~ x1 + x2 + x3
+                     level: 2
+                     TC_between =~ x1 + x2 + x3'
+```
+
+- **Multidimensional Mood Questionnaire (MDMQ)**:
+```{r }
+MDMQ_multilvModel <- 'level: 1
+                      NegativeValence_within =~ x1 + x2 + x3
+                      TenseArousal_within =~ x4 + x5 + x6
+                      Fatigue_within =~ x7 + x8 + x9
+                      level: 2
+                      NegativeValence_between =~ x1 + x2 + x3
+                      TenseArousal_between =~ x4 + x5 + x6
+                      Fatigue_between =~ x7 + x8 + x9'
+```
+
+The three configural cluster models (i.e., assuming the same factorial structure at both levels) were fitted on the simulated data, and the information on convergence, Heywood cases, and parameter estimates for each simulated dataset was stored into a CSV file.
+
+<br>
+
+#### Power plots
+
+Finally, the generated CSV files were read and visualized as a power plot, showing how statistical power (i.e., percentage of simulations with parameter estimates significantly higher than .15) variates with increasing N_2, N_1 and LOAD values.
+
+<br>
+
+<br>
+
+## 1.2. R functions
+
+Here, we show the functions used to implement the steps described above.
+
+<br>
+
+<details><summary>**1) sim.cov** (*by Prof. Massimiliano Pastore*)</summary>
+<p>
+```{r eval=FALSE}
+#' @title Simulate covariance matrix
+#' @param model.pop = population model
+#' @param N = sample size
+#' @param model.test = target model
+#' @param seed = random seed
+sim.cov <- function(model.pop, N, model.test, seed = NULL) { require(lavaan)
+  OK <- FALSE
+  while(!OK) {
+    myData <- simulateData(model.pop, model.type = "cfa",
+                           std.lv = TRUE, sample.nobs = N, seed = seed)
+    fit <- sem(model.test, data = myData, std.lv = TRUE)
+    OK <- ifelse(det(lavInspect(fit,"cov.lv"))>0 &
+                   fit@Fit@converged,TRUE,FALSE)
+  }
+  out.cov <- cov2cor( inspectSampleCov( model.test, myData )$cov )
+  return(out.cov)}
+```
+</p>
+</details>
+
+simulates a covariance matrix based on a population CFA model (*model.pop*) and a given sample size (*N*) (requires the *lavaan* R package). The covariance matrix is returned only when the target model fits coherently on the simulated data. In our power analysis, this function is used to simulate the within-participant (level 1) and the between-participants (level 2) covariance matrices.
+
+<br>
+
+<details><summary>**2) MCFAsim** (*by Luca Menghini & Prof. Massimiliano Pastore*)</summary>
+<p>
+```{r eval=FALSE}
+#' @title Multilevel CFA simulation
+#' @param N_2 = Integer. Simulated sample size on level 2 (between)
+#' @param N_1 = Integer. Simulated sample size on level 1 (within)
+#' @param LOAD = Numeric. Target loading(s) to be simulated.
+#' @param MU = Numeric. Sample grand average
+#' @param n.items = Integer. Number of items to be generated
+#' @param cluster = Character. Name of the cluster variable in a two-level dataset
+#' @param b.cov = Matrix or lavaan.matrix.symmetric. Level 2 (between) covariance matrix
+#' @param w.cov = Matrix or lavaan.matrix.symmetric. Level 1 (within) covariance matrix
+#' @param std = Logical. Indicating whether standardized covariance matrices should be used (default: TRUE)
+#' @param seed = Integer. Random seed to be used (NULL by default)
+#' @param corrs = Logical. Indicating whether correlations between simulated variables should be returned (default: FALSE)
+#' @param model.twolevels = Character. Multilevel model to be used for estimating parameters from the simulated data
+
+MCFAsim <- function(N_2 = 100, N_1 = 21, LOAD = .6, MU = 0, n.items = 4,
+                    b.cov = NULL, w.cov = NULL, std = TRUE, corrs = FALSE,
+                    model.twolevels = NULL){ require(lavaan); require(MASS)
+  
+  # 1) SIMULATING MULTILEVEL DATASET
+  # ................................
+  
+  # Simulating participant means (lv2) = grandAverage + BLUPs (using b.cov)
+  U <- mvrnorm(n=N_2,mu=rep(0,n.items),Sigma=b.cov) # BLUPs
+  cMeans <- MU + U # clusters' means (1 X cluster X item)
+  
+  # Simulating within-participant scores (lv1) = participant means + residual deviance (using w.cov)
+  dataList <- list()
+  for (cl in 1:nrow(cMeans)){
+    e <- mvrnorm(n=N_1,mu=rep(0,n.items),Sigma=w.cov) # Residuals
+    for (i in 1:nrow(e)){ e[i,] <- e[i,] + cMeans[cl,] } # within-participant scores
+    dataList[[cl]] <- e }
+  
+  # Merging lv1 and lv2 data in a multilevel dataset
+  simulated <- data.frame(ID=rep(1:N_2,N_1),TIME=rep(rep(NA,N_1),N_2)) # empty dataset
+  simulated <- simulated[order(simulated$ID),] # ordered by ID
+  simulated$TIME=rep(1:N_1,N_2)
+  for(i in 1:n.items){ simulated <- cbind(simulated,rep(NA,nrow(simulated))) } # empty items columns
+  colnames(simulated)[3:ncol(simulated)] <- paste("x",seq(1,n.items,1),sep="") # item names
+  for(cl in 1:length(dataList)){ # from list to data.frame
+    simulated[simulated$ID==cl,3:ncol(simulated)] <- dataList[[cl]] }
+  
+  # 2) PARAMETER ESTIMATION
+  # .......................
+  
+  # fitting the specified multilevel CFA model and estimates the parameters
+  results <- try(cfa(model.twolevels,data=simulated,cluster="ID",std.lv=TRUE),silent=TRUE) # CFA
+  
+  # 3) SAVING RESULTS DEPENDING ON THE CASE
+  # .......................................
+  
+  parameters <- data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6)) # empty dataset
+  
+  # 3.1. checking model diagnostics 
+  # ................................
+  if(class(results)!="try-error"){ error = FALSE # check error
+  if(lavaan::lavInspect(results,"converged")==TRUE){ convergence = TRUE # check convergence
+  b.var <- diag(lavaan::lavInspect(results,"est")[["ID"]][["theta"]])
+  w.var <- diag(lavaan::lavInspect(results,"est")[["within"]][["theta"]])
+  if(!any(b.var<=0) & !any(w.var<=0)){ neg.Variance = 0 # check negative variance
+  
+  # 3.1.1. no errors, convergence and no Heywood cases
+  parameters <- rbind(parameters,
+                      # model info
+                      c(N_2,N_1,LOAD,lavaan::lavInspect(results,"fit")[c("npar")],std, 
+                        error,convergence,neg.Variance, # convergence
+                      # lv1 and lv2 loadings - default type="std.all"
+                        c(round(lavaan::standardizedsolution(results)[
+                          lavaan::standardizedsolution(results)$op=="=~","est.std"],3)),
+                      # fit indices
+                        round(lavaan::lavInspect(results,"fit")[c("chisq","df","rmsea","cfi",
+                                                                  "srmr_within","srmr_between")],3),
+                      # lv1 and lv2 loadings CI
+                        c(round(lavaan::standardizedsolution(results)[ 
+                          lavaan::standardizedsolution(results)$op=="=~","ci.lower"],3)),
+                        c(round(lavaan::standardizedsolution(results)[
+                          lavaan::standardizedsolution(results)$op=="=~","ci.upper"],3))))
+  
+  # 3.1.2. no errors, convergence BUT Heywood case
+  }else{ neg.Variance=length(b.var[b.var<=0])+length(w.var[w.var<=0])
+  parameters <- rbind(parameters,
+                      c(N_2,N_1,LOAD,lavaan::lavInspect(results,"fit")[c("npar")],std, # model info
+                        error,convergence,neg.Variance, # convergence
+                        rep(NA,n.items*6+6))) } # loadings and fit indices
+  
+  # 3.1.2. no errors, BUT non-convergence
+  }else{ convergence = FALSE
+    parameters <- rbind(parameters,
+                        c(N_2,N_1,LOAD,NA,std, # model info
+                          error,convergence,NA, # convergence
+                          rep(NA,n.items*6+6))) # loadings and fit indices
+    
+    # 3.1.2. convergence-related errors
+    }}else{ error=TRUE
+    parameters <- rbind(parameters,
+                        c(N_2,N_1,LOAD,NA,std, # model info
+                          error,NA,NA, # convergence
+                          rep(NA,n.items*6+6))) } # loadings and fit indices
+  
+  
+  # 3.2. renaming columns
+  # .....................
+  colnames(parameters) <- c("N_2","N_1","load_level","npar","std","error","converged","negVariance",
+                            paste(paste("x",1:n.items,sep=""),rep("w",n.items),sep=""),
+                            paste(paste("x",1:n.items,sep=""),rep("b",n.items),sep=""),
+                            "chisq","df","rmsea","cfi","srmr_between","srmr_within",
+                            paste(paste("x",1:n.items,sep=""),rep("w.CI.low",n.items),sep=""),
+                            paste(paste("x",1:n.items,sep=""),rep("b.CI.low",n.items),sep=""),
+                            paste(paste("x",1:n.items,sep=""),rep("w.CI.up",n.items),sep=""),
+                            paste(paste("x",1:n.items,sep=""),rep("b.CI.up",n.items),sep=""))
+  
+  # 3.3. integrating results with correlations between simulated variables
+  # ......................................................................
+  if(corrs==TRUE){
+    corrS <- cor(simulated[,3:ncol(simulated)],simulated[,3:ncol(simulated)],use="complete.obs",method="pearson")
+    corr.lab <- matrix(apply(expand.grid(rownames(corrS),rownames(corrS)),1,paste,collapse="."),nrow=n.items,ncol=n.items)
+    corrS <- round(corrS[lower.tri(corrS, diag = FALSE)],2)
+    names(corrS) <- corr.lab[lower.tri(corr.lab, diag = FALSE)]
+    parameters <- cbind(parameters,t(corrS))}
+  
+  
+  # 4) RETURNING SIMULATED PARAMETERS
+  # .................................
+  return(parameters) }
+```
+</p>
+</details>
+
+simulates level-1 and level-2 datasets based on the grand average *MU*, sample sizes *N_1* and *N_2*, and the covariance matrices at level 1 (*cov_w*) and level 2 (*cov_b*) (requires the *lavaan* and the *MASS* R packages). Then, the two datasets are merged, and the two-level CFA model is fitted on the multilevel dataset. Information on model fit and parameter estimates are finally stored in a data.frame.
+
+<br>
+
+<details><summary>**3) MCFASim_results** (*by Luca Menghini*)</summary>
+<p>
+```{r }
+#' @title Multilevel CFA simulation results
+#' @param parameters = data.frame. Dataset of parameters simualted with the MCFAsim function
+#' @param SSizes1 = Character. Name of the 'parameters' column reporting the possible sample sizes at level 1
+#' @param SSizes2 = Character. Name of the 'parameters' column reporting the possible sample sizes at level 2
+#' @param LOAD = Character. Name of the 'parameters' column reporting the possible LOAD values
+#' @param n.items = Integer. Number of items included in the 'parameters' data.frame
+
+MCFASim_results <- function(parameters=NULL, SSizes1="N_1", SSizes2="N_2", LOADS="load_level", n.items=4){
+  
+  # 1) DATA PREPARATION
+  # ...................
+  
+  # renaming columns
+  parameters$N1 <- parameters[,SSizes1]
+  parameters$N2 <- parameters[,SSizes2]
+  parameters$LOAD <- parameters[,LOADS]
+  parameters$cases <- paste(parameters$N2,parameters$N1,parameters$LOAD,sep="_")
+  converged <- parameters[parameters$converged==TRUE,]
+  nonNegVar <- parameters[parameters$converged==TRUE & parameters$negVariance==FALSE,]
+  
+  # empty data.frame to be filled with results
+  CASEs <- levels(as.factor(parameters[,"cases"]))
+  results <- data.frame(matrix(nrow=length(CASEs),ncol=5+n.items*4+4))
+  colnames(results) <- c("N2","N1","LOAD","conv","negVar", # sSize and convergence
+                         paste("x",1:n.items,"w.sig",sep=""),# loadings sigificance
+                         paste("x",1:n.items,"b.sig",sep=""), 
+                         paste("x",1:n.items,"w.15",sep=""),  # loadings > .1
+                         paste("x",1:n.items,"b.15",sep=""),
+                         "RMSEA.06","CFI.90","SRMR_between.06","SRMR_within.06") # fit indices
+  
+  # 2) DATA ENTERING
+  # .................
+  
+  # filling empty data.frame with simulation and percentage information
+  for(i in 1:length(CASEs)){
+    
+    # 2.1. recording information on sample sizes and LOAD values
+    if(substr(CASEs[i],4,4)=="_"){
+      if(substr(CASEs[i],7,7)=="_"){
+        results[i,"N2"] <- substr(CASEs[i],1,3)
+        results[i,"N1"] <- substr(CASEs[i],5,6)
+        results[i,"LOAD"] <- substr(CASEs[i],8,10) }else{
+          results[i,"N2"] <- substr(CASEs[i],1,3)
+          results[i,"N1"] <- substr(CASEs[i],5,5)
+          results[i,"LOAD"] <- substr(CASEs[i],7,9) }
+      }else if(substr(CASEs[i],3,3)=="_"){
+        if(substr(CASEs[i],6,6)=="_"){
+          results[i,"N2"] <- substr(CASEs[i],1,2)
+          results[i,"N1"] <- substr(CASEs[i],4,5)
+          results[i,"LOAD"] <- substr(CASEs[i],7,9) 
+          }else{
+            results[i,"N2"] <- substr(CASEs[i],1,2)
+            results[i,"N1"] <- substr(CASEs[i],4,4)
+            results[i,"LOAD"] <- substr(CASEs[i],6,8) }
+        }else{ 
+          if(substr(CASEs[i],8,8)=="_"){ 
+            results[i,"N2"] <- substr(CASEs[i],1,4)
+            results[i,"N1"] <- substr(CASEs[i],6,7)
+            results[i,"LOAD"] <- substr(CASEs[i],9,11) 
+            }else{
+              results[i,"N2"] <- substr(CASEs[i],1,4)
+              results[i,"N1"] <- substr(CASEs[i],6,6)
+              results[i,"LOAD"] <- substr(CASEs[i],8,10) }}
+    results[,c("N1","N2","LOAD")] <- lapply(results[,c("N1","N2","LOAD")],as.numeric)
+    
+    # 2.2. info on convergence and Heywood cases
+    results[i,"conv"] <- nrow(converged[converged$cases==CASEs[i],])/
+      nrow(parameters[parameters$cases==CASEs[i],])
+    results[i,"negVar"] <- nrow(converged[converged$negVariance!=0 & converged$cases==CASEs[i],])/
+      nrow(converged[converged$cases==CASEs[i],])
+    
+    # 2.3. standardized loadings significance and standardized loadings significantly higher than .15
+    PARs <- levels(factor(colnames(results)[6:(5+n.items*2)],levels=colnames(results)[6:(5+n.items*2)]))
+    PARRs <- levels(factor(colnames(results)[((5+n.items*2)+1):(ncol(results)-4)],
+                           levels=colnames(results)[((5+n.items*2)+1):(ncol(results)-4)]))
+    PARRRs <- levels(factor(gsub(".sig",".CI.low",colnames(results)[6:(5+n.items*2)]),
+                            levels=c(gsub(".sig",".CI.low",colnames(results)[6:(5+n.items*2)]))))
+    for(PAR in PARs){
+      p <- nonNegVar[nonNegVar$cases==CASEs[i],PARRRs[which(PARs==PAR)]]
+      results[i,PAR] <- length(p[p>0])/length(p) # loadings significance
+      results[i,which(colnames(results)==PARRs[which(PARs==PAR)])] <- length(p[p>.15])/length(p) } # loadings > .15
+    
+    # 2.4. fit indices
+    results[i,"RMSEA.06"] <- round(nrow(nonNegVar[nonNegVar$cases==CASEs[i] & nonNegVar$rmsea<.06,])/
+                                     nrow(nonNegVar[nonNegVar$cases==CASEs[i],]),2)
+    results[i,"CFI.90"] <- round(nrow(nonNegVar[nonNegVar$cases==CASEs[i] & nonNegVar$cfi>.90,])/
+                                   nrow(nonNegVar[nonNegVar$cases==CASEs[i],]),2)
+    results[i,"SRMR_between.06"] <- round(nrow(nonNegVar[nonNegVar$cases==CASEs[i] & nonNegVar$srmr_between<.06,])/
+                                            nrow(nonNegVar[nonNegVar$cases==CASEs[i],]),2)
+    results[i,"SRMR_within.06"] <- round(nrow(nonNegVar[nonNegVar$cases==CASEs[i] & nonNegVar$srmr_within<.06,])/
+                                           nrow(nonNegVar[nonNegVar$cases==CASEs[i],])) }
+  
+  # 3) SORTING AND PRINTING RESULTS
+  # ...............................
+  
+  results <- results[order(as.numeric(results$N2),as.numeric(results$N1),as.numeric(results$LOAD)),]
+  results$cases <- paste(results$N2,results$N1,results$LOAD,sep="_")
+  return(results) }
+```
+</p>
+</details>
+
+summarizes the **percentages of cases** satisfying the following conditions for each combination of *N_2*, *N_1* and *LOADS* included in the simulated dataset of parameters: 
+
+- convergence (*conv*)
+
+- Heywood cases (*negVar*)
+
+- standardized loadings significantly higher than zero (*x1w.sig*, *x1b.sig*, etc.)
+
+- standardized loadings significantly higher than the **cut-off value of .15** (*x1w.15*, *x1b.15*, etc.)
+
+- fit indices meeting commonly used cut-off criteria (*RMSEA.06*, *CFI.90*, *SRMR.06*)
+
+<br>
+
+<details><summary>**4) MCFAsim_powerPlots** (*by Luca Menghini*)</summary>
+<p>
+```{r }
+#' @title Multilevel CFA simulation power plots
+#' @param res = data.frame. Dataset of parameters generated with the MCFAsim function
+#' @param results = data.frame. Dataset of percentages generated with the MCFAsim_results function
+#' @param SSizes1 = Character. Name of the 'parameters' column reporting the possible sample sizes at level 1
+#' @param SSizes2 = Character. Name of the 'parameters' column reporting the possible sample sizes at level 2
+#' @param LOAD = Character. Name of the 'parameters' column reporting the possible LOAD values
+#' @param n.items = Integer. Number of items included in the 'parameters' data.frame
+#' @param span = Numeric. Amount of smoothing for the default loess smoother (from ggplot2)
+#' @param out = Character. Indicating the output that should be visualized
+
+MCFAsim_powerPlots <- function(res=NULL, results=NULL, SSizes1="N1",SSizes2="N2", LOADS="LOAD", n.items=4,
+                               span=0.6, out=c("conv","neg","rmsea","cfi","srmrW","srmrB","parDistrW","parDistrB",
+                                               "parSigW","parSigB","par.15W","par.15B")){ 
+  require(ggplot2); require(stringr); require(reshape2); require(gridExtra)
+  
+  # 1) DATA PREPARATION
+  # ...................
+  
+  # renaming columns
+  results$N1 <- results[,SSizes1]
+  results$N2 <- results[,SSizes2]
+  results$LOAD <- results[,LOADS]
+  results$Loadings <- as.factor(results$LOAD)
+  
+  # preparing dataset of loadings
+  res$cases <- paste(res$N_2,res$N_1,res$load_level,sep="_")
+  long <- melt(res[res$converged==TRUE & res$negVariance==0, c(9:(8+n.items*2),ncol(res)) ], id=c("cases"))
+  long <- cbind(long,str_split_fixed(long$cases, "_", 3))
+  colnames(long)[4:6] <- c("N2","N1","LOAD")
+  long$N1 <- as.numeric(as.character(long$N1))
+  long_b <- long[substr(long$variable,3,3)=="b",]
+  long_w <- long[substr(long$variable,3,3)=="w",]
+  
+  # 2) GENERATING PLOTS
+  # ...................
+  
+  # 2.1. Convergence rate..............................................................
+  if(out=="conv"){
+    p <- ggplot(results,aes(x=N2,y=conv*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.5)+labs(x="Sample Size",y="Convergence rate (%)")+
+      ggtitle("Convergence rate by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                        breaks=as.numeric(levels(as.factor(results$N2))),
+                        labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 2.2. Negative variance rate........................................................
+  else if(out=="neg"){
+    p <- ggplot(results,aes(x=N2,y=negVar*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.5)+labs(x="Sample Size",y="Negative variance rate (%)")+
+      ggtitle("Negative variance rate by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 2.3. Fit indices...................................................................
+   # 2.3.1. RMSEA < .06
+  else if(out=="rmsea"){
+    p <- ggplot(results,aes(x=N2,y=RMSEA.06*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.5)+labs(x="Sample Size",y="Rate of RMSEA < .06 (%)")+
+      ggtitle("Rate of RMSEA < .06 by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+    # 2.3.2. CFI > .90
+  else if(out=="cfi"){ 
+    p <- ggplot(results,aes(x=N2,y=CFI.90*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.5)+labs(x="Sample Size",y="Rate of CFI > .90 (%)")+
+      ggtitle("Rate of CFI > .90 by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+    # 2.3.3. SRMR within < .06  
+  else if(out=="srmrW"){ 
+    p <- ggplot(results,aes(x=N2,y=SRMR_within.06*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.5)+labs(x="Sample Size",y="Rate of SRMR within < .06 (%)")+
+      ggtitle("Rate of SRMR within by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2))))+
+      theme(text=element_text(size=9,face="bold"),axis.title = element_text(size=15,face="bold")) }
+
+    # 2.3.4. SRMR between < .06    
+  else if(out=="srmrB"){ 
+    p <- ggplot(results,aes(x=N2,y=SRMR_between.06*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.5)+labs(x="Sample Size",y="Rate of SRMR between < .06 (%)")+
+      ggtitle("Rate of SRMR between by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 2.4. Parameter distribution at level 1.............................................
+  else if(out=="parDistrW"){
+    long_w$Loadings <- as.factor(long_w$LOAD)
+    p_parDistrW.50 <- ggplot(na.omit(long_w[long_w$N2=="50",]),aes(x=value,fill=Loadings))+
+      geom_density(alpha=.9) +  xlim(0,1) +
+      geom_vline(xintercept=c(0.4,0.6,0.8),lty=2)+
+      facet_wrap("N1",strip.position="right",ncol=4)+
+      ggtitle("Lv1 parameters density distributions (N2 = 50)")
+    p_parDistrW.1000 <- ggplot(na.omit(long_w[long_w$N2=="1000",]),aes(x=value,fill=Loadings))+
+      geom_density(alpha=.9) + xlim(0,1) +
+      geom_vline(xintercept=c(0.4,0.6,0.8),lty=2)+
+      facet_wrap("N1",strip.position="right",ncol=4)+
+      ggtitle("Lv1 parameters density distributions (N2 = 1000)")
+    p <- grid.arrange(p_parDistrW.50,p_parDistrW.1000,nrow=2) }
+  
+  # 2.5. Parameter distribution at level 2.............................................
+  else if(out=="parDistrB"){ 
+    long_b$Loadings <- as.factor(long_b$LOAD)
+    p_parDistrB.50 <- ggplot(na.omit(long_b[long_b$N2=="50",]),aes(x=value,fill=Loadings))+
+      geom_density(alpha=.9) + geom_vline(xintercept=c(0.4,0.6,0.8),lty=2)+
+      scale_x_continuous(breaks=seq(0,1,0.2),limits=c(0,1)) +
+      facet_wrap("N1",strip.position="right",ncol=4) + ggtitle("Lv2 parameters density distributions (N2 = 50)")
+    p_parDistrB.1000 <- ggplot(na.omit(long_b[long_b$N2=="1000",]),aes(x=value,fill=Loadings))+
+      geom_density(alpha=.9) + geom_vline(xintercept=c(0.4,0.6,0.8),lty=2) +
+      scale_x_continuous(breaks=seq(0,1,0.2),limits=c(0,1)) +
+      facet_wrap("N1",strip.position="right",ncol=4) + ggtitle("Lv2 parameters density distributions (N2 = 1000)")
+    p <- grid.arrange(p_parDistrB.50,p_parDistrB.1000) }
+  
+  # 2.6. Parameter significance at level 1.............................................
+  else if(out=="parSigW"){
+    results$w.sig <- rowMeans(results[,6:(5+n.items)])
+    p <- ggplot(results,aes(x=N2,y=w.sig*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.3)+labs(x="Sample Size",y="Rate of lv1 loadings significance (%)")+
+      ggtitle("Rate of lv1 loadings significance by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 2.7. Parameter significance at level 2.............................................
+  else if(out=="parSigB"){
+    results$b.sig <- rowMeans(results[,(n.items+5):(n.items*2+4)])
+    p <- ggplot(results,aes(x=N2,y=b.sig*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=span,size=1.5,alpha=.3)+labs(x="Sample Size",y="Rate of lv2 loadings significance (%)")+
+      ggtitle("Rate of lv2 loadings significance by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 2.8. Parameters > .15 at level 1....................................................
+  else if(out=="par.15W"){
+    results$w.15 <- rowMeans(results[,(n.items*2+6):(n.items*3+5)])
+    p <- ggplot(results,aes(x=N2,y=w.15*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=.6,size=1.5,alpha=.3)+labs(x="Sample Size",y="Rate of lv1 loadings > .15 (%)")+
+      ggtitle("Rate of lv1 loadings > .15 by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 2.9. Parameters > .15 at level 2....................................................
+  else if(out=="par.15B"){ # parameters significance Lv1
+    results$b.15 <- rowMeans(results[,(n.items*3+6):(n.items*4+5)])
+    p <- ggplot(results,aes(x=N2,y=b.15*100,col=Loadings))+
+      geom_smooth(se=FALSE,span=.6,size=1.5,alpha=.3)+labs(x="Sample Size",y="Rate of lv2 loadings > .15 (%)")+
+      ggtitle("Rate of lv2 loadings > .15 by sample size on level 1 (panels) and level 2 (x axis)")+
+      geom_point(aes(fill=Loadings),shape=20,size=5)+
+      facet_wrap("N1",nrow=length(levels(as.factor(results$N2))),strip.position="right")+
+      scale_x_continuous(name="Lv2 sample size",
+                         breaks=as.numeric(levels(as.factor(results$N2))),
+                         labels=as.numeric(levels(as.factor(results$N2)))) }
+  
+  # 3) GENERATING PLOTS
+  # ...................
+  p + theme(text=element_text(size=9,face="bold"),axis.title = element_text(size=15,face="bold")) }
+```
+</p>
+</details>
+
+visualizes the results summarized with the *MCFAsim_powerPlots* function
+
+<br>
+<br>
+
+# 2. Simulations
+
+Here, we show how the *sim.cov* and the *MCFAsim* functions were used to simulate the datasets for each ESM scale.
+
+## 2.1. Simulation settings
+
+First, we specify some general settings common to all scales. Namely, the number of simulations for each combination of sample sizes and loadings (*SIMs*), the sample sizes at level 2 (*N2_SSizes*) and level 1 (*N1_SSizes*), and the loading values (*LOADs*).
+```{r warning=FALSE,message=FALSE,eval=FALSE}
+# simulation settings
+SIMs <- seq(1,10000) # number of simulations per each combination of conditions
+N2_SSizes <- c(50,100,150,200,250,300,350,400,500,800,1000) # sample sizes to simulate on level 2 (participants)
+N1_SSizes <- c(5,10,15,21) # sample sizes to simulate on level 1 (occasions)
+LOADs <- c(.4,.6,.8) # expected loadings to simulate
+```
+
+<br>
+
+## 2.2. TDS
+
+Here, we simulate and estimate parameters from 10,000 datasets for each combination of sample sizes and loadings for the Task Demand Scale (TDS, 4 items using the *TDS_model.pop* and the *TDS_multilvModel* models).
+```{r eval=FALSE, warning=FALSE, message=FALSE}
+# function that applies MCFAsim to each combination of sample sizes and loadings
+simulation <- function(SIM){
+  parameters <- rbind(data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6+n.items*(n.items-1)/2)),
+                      MCFAsim(N_2 = N2_SSize, N_1 = N1_SSize, LOAD = LOAD, std = TRUE, corrs = FALSE, MU = 0, n.items = 4, 
+                              b.cov=sim.cov(model.pop=gsub("LOAD",LOAD,TDS_model.pop),
+                                            model.test=gsub("LOAD\\*","",TDS_model.pop),
+                                            N=N2_SSize),
+                              w.cov=sim.cov(model.pop=gsub("LOAD",LOAD,TDS_model.pop),
+                                            model.test=gsub("LOAD\\*","",TDS_model.pop),
+                                            N=N1_SSize*N2_SSize),
+                              model.twolevels = TDS_multilvModel))
+  return(parameters)}
+
+# empty data.frame to be filled with parameter values
+n.items <- 4 # 4 TDS items
+PARAMETERS <- data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6+n.items*(n.items-1)/2))
+
+# simulate for N = SIMs
+for(N2_SSize in N2_SSizes){
+  for(N1_SSize in N1_SSizes){
+    for(LOAD in LOADs){
+      cat("\n\nN2 =",N2_SSize,"- N1 =",N1_SSize,"- LOAD =",LOAD)
+      parameters <- lapply(SIMs,simulation)
+      PARAMETERS <- rbind(PARAMETERS,do.call(rbind.data.frame, parameters)) }}}
+save(PARAMETERS, file = "TDS_PARAMETERS.RData")
+```
+
+<br>
+
+## 2.3. TCS
+
+Here, we simulate and estimate parameters from 10,000 datasets for each combination of sample sizes and loadings for the Task Control Scale (TCS, 3 items using the *TCS_model.pop* and the *TCS_multilvModel* models).
+```{r eval=FALSE, warning=FALSE, message=FALSE}
+# function that applies MCFAsim to each combination of sample sizes and loadings
+simulation <- function(SIM){
+  parameters <- rbind(data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6+n.items*(n.items-1)/2)),
+                      MCFAsim(N_2 = N2_SSize, N_1 = N1_SSize, LOAD = LOAD, std = TRUE, corrs = FALSE, MU = 0, n.items = 3, 
+                              b.cov=sim.cov(model.pop=gsub("LOAD",LOAD,TCS_model.pop),
+                                            model.test=gsub("LOAD\\*","",TCS_model.pop),
+                                            N=N2_SSize),
+                              w.cov=sim.cov(model.pop=gsub("LOAD",LOAD,TCS_model.pop),
+                                            model.test=gsub("LOAD\\*","",TCS_model.pop),
+                                            N=N1_SSize*N2_SSize),
+                              model.twolevels = TCS_multilvModel))
+  return(parameters)}
+
+# empty data.frame to be filled with parameter values
+n.items <- 3 # 3 TDS items
+PARAMETERS <- data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6+n.items*(n.items-1)/2))
+
+# simulate for N = SIMs
+for(N2_SSize in N2_SSizes){
+  for(N1_SSize in N1_SSizes){
+    for(LOAD in LOADs){
+      cat("\n\nN2 =",N2_SSize,"- N1 =",N1_SSize,"- LOAD =",LOAD)
+      parameters <- lapply(SIMs,simulation)
+      PARAMETERS <- rbind(PARAMETERS,do.call(rbind.data.frame, parameters)) }}}
+save(PARAMETERS, file = "TCS_PARAMETERS.RData") # saving results
+```
+
+<br>
+
+## 2.4. MDMQ
+
+Here, we simulate and estimate parameters from 10,000 datasets for each combination of sample sizes and loadings for the Multidimensional Mood Questionnaire (MDMQ, 9 items using the *MDMQ_model.pop* and the *MDMQ_multilvModel* models).
+```{r eval=FALSE, warning=FALSE, message=FALSE}
+# function that applies MCFAsim to each combination of sample sizes and loadings
+simulation <- function(SIM){
+  parameters <- rbind(data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6+n.items*(n.items-1)/2)),
+                      MCFAsim(N_2 = N2_SSize, N_1 = N1_SSize, LOAD = LOAD, std = TRUE, corrs = FALSE, MU = 0, n.items = 9, 
+                              b.cov=sim.cov(model.pop=gsub("LOAD",LOAD,MDMQ_model.pop),
+                                            model.test=gsub("LOAD\\*","",MDMQ_model.pop),
+                                            N=N2_SSize),
+                              w.cov=sim.cov(model.pop=gsub("LOAD",LOAD,MDMQ_model.pop),
+                                            model.test=gsub("LOAD\\*","",MDMQ_model.pop),
+                                            N=N1_SSize*N2_SSize),
+                              model.twolevels = MDMQ_multilvModel))
+  return(parameters)}
+
+# empty data.frame to be filled with parameter values
+n.items <- 9 # 3 TDS items
+PARAMETERS <- data.frame(matrix(nrow=0,ncol=n.items*6+5+3+6+n.items*(n.items-1)/2))
+
+# simulate for N = SIMs
+for(N2_SSize in N2_SSizes){
+  for(N1_SSize in N1_SSizes){
+    for(LOAD in LOADs){
+      cat("\n\nN2 =",N2_SSize,"- N1 =",N1_SSize,"- LOAD =",LOAD)
+      parameters <- lapply(SIMs,simulation)
+      PARAMETERS <- rbind(PARAMETERS,do.call(rbind.data.frame, parameters)) }}}
+save(PARAMETERS, file = "MDMQ_PARAMETERS.RData") # saving results
+```
+
+<br>
+<br>
+
+# 3. Results 
+
+Here, we show how the results of our simulations.
+
+## 3.1. Processing {.tabset .tabset-fade .tabset-pills}
+
+First, results are read and processed with the *MCFASim_results* function.
+
+### TDS
+```{r }
+load("TDS_PARAMETERS.RData") # loading parameters
+(res.TDS <- PARAMETERS[order(PARAMETERS$N_2,PARAMETERS$N_1,PARAMETERS$load_level),]) # showing parameters
+(results.TDS <- MCFASim_results(parameters=res.TDS, SSizes1="N_1", SSizes2="N_2", # processing parameters
+                                LOADS="load_level", n.items=4)) # & showing percentages of simulations
+```
+
+<br>
+
+### TCS
+```{r }
+load("TCS_PARAMETERS.RData") # loading parameters
+(res.TCS <- PARAMETERS[order(PARAMETERS$N_2,PARAMETERS$N_1,PARAMETERS$load_level),]) # showing parameters
+(results.TCS <- MCFASim_results(parameters=res.TCS, SSizes1="N_1", SSizes2="N_2", # processing parameters
+                                LOADS="load_level", n.items=3)) # & showing percentages of simulations
+```
+
+<br>
+
+### MDMQ
+```{r }
+load("MDMQ_PARAMETERS.RData") # loading parameters
+(res.MDMQ <- PARAMETERS[order(PARAMETERS$N_2,PARAMETERS$N_1,PARAMETERS$load_level),]) # showing parameters
+(results.MDMQ <- MCFASim_results(parameters=res.MDMQ, SSizes1="N_1", SSizes2="N_2", # processing parameters
+                                 LOADS="load_level", n.items=9)) # & showing percentages of simulations
+```
+
+<br>
+
+## 3.2. Convergence {.tabset .tabset-fade .tabset-pills}
+
+Second, we check the simulation qualities, including convergence rate, percentages of Heywood cases, and fit indices.
+
+### TDS {.tabset .tabset-fade .tabset-pills}
+
+#### OVERALL
+
+First, we check convergence and Heywood cases overall.
+```{r }
+round(100*nrow(res.TDS[res.TDS$converged==TRUE,])/nrow(res.TDS),2) # almost 100% converged
+round(100*nrow(res.TDS[res.TDS$converged==TRUE&res.TDS$negVariance!=0,])/ # very low % of Heywood cases
+        nrow(res.TDS[res.TDS$converged==TRUE,]),2)
+```
+
+<br>
+
+#### CONVERGENCE
+
+Second, we plot convergence against simulation conditions (i.e., sample sizes and loadings). We can see that convergence rates are always very high, with slightly lower rates when LOAD = 0.4.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="conv",span=.4)
+```
+
+<br>
+
+#### HEYWOOD CASES
+
+Third, we plot the rate of Heywood cases against simulation conditions (i.e., sample sizes and loadings). We can see that most Heywood cases are found with **LOAD = 0.4**, showing unsatisfactory Heywood Cases rate for **N2 < 150**. In contrast, Heywood cases are very rare with LOAD = 0.6 or 0.8. 
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="neg",span=.4)
+```
+
+<br>
+
+#### FIT INDICES
+
+Fourth, we visualize the distributions of fit indices, and we plot the rate of satisfactory fit against simulation conditions (i.e., sample sizes and loadings). Overall, fit index distributions are centered on the expected values, with only a minority of cases showing fit indices outside the cut-off ranges. We can see that the rate of satisfactory fit indices (RMSEA and CFI) is slightly lower for cases with **N_2 < 100 and N_1 < 10**.
+```{r warning=FALSE,message=FALSE}
+# overall
+par(mfrow=c(2,2))
+hist(res.TDS$rmsea,col="black",breaks=40)
+hist(res.TDS$cfi,col="black",breaks=40)
+hist(res.TDS$srmr_between,col="black",breaks=40)
+hist(res.TDS$srmr_within,col="black",breaks=40)
+
+# RMSEA
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="rmsea",span=.4)
+
+# CFI
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="cfi",span=.4)
+
+# SRMR within
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="srmrW",span=.4)
+
+# SRMR between
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="srmrB",span=.4)
+```
+
+<br>
+
+#### PARAMETERS
+
+Finally, we visualize the distributions of the parameter estimates over sample sizes at level 1, and considering only the extreme values for N_2 (i.e., 50 and 1,0000). We can see that parameters are centered on the expected values, with more variability at level 2 (due to the lower sample size) than at level 1.
+```{r warning=FALSE,message=FALSE,out.width='100%'}
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="parDistrW")
+MCFAsim_powerPlots(res=res.TDS,results=results.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="parDistrB")
+```
+
+<br>
+
+### TCS {.tabset .tabset-fade .tabset-pills}
+
+#### OVERALL
+
+First, we check convergence and Heywood cases overall.
+```{r }
+round(100*nrow(res.TCS[res.TCS$converged==TRUE,])/nrow(res.TCS),2) # almost 100% converged
+round(100*nrow(res.TCS[res.TCS$converged==TRUE&res.TCS$negVariance!=0,])/ # very low % of Heywood cases
+        nrow(res.TDS[res.TCS$converged==TRUE,]),2)
+```
+
+<br>
+
+#### CONVERGENCE
+
+Second, we plot convergence against simulation conditions (i.e., sample sizes and loadings). We can see that convergence rates are always very high, with slightly lower rates when LOAD = 0.4.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(res=res.TCS,results=results.TCS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=3,out="conv",span=.5)
+```
+
+<br>
+
+#### HEYWOOD CASES
+
+Third, we plot the rate of Heywood cases against simulation conditions (i.e., sample sizes and loadings). We can see that most Heywood cases are found with **LOAD = 0.4**, showing unsatisfactory Heywood Cases rate for **N2 < 150**. In contrast, Heywood cases are very rare with LOAD = 0.6 or 0.8. 
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(res=res.TCS,results=results.TCS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=3,out="neg",span=.4)
+```
+
+<br>
+
+#### FIT INDICES
+
+Since the configural cluster model is **saturated** for TCS items (i.e., 3 observed indicators measuring one latent dimension), we cannot evaluate the computed fit indices.
+
+<br>
+
+#### PARAMETERS
+
+Finally, we visualize the distributions of the parameter estimates over sample sizes at level 1, and considering only the extreme values for N_2 (i.e., 50 and 1,0000). We can see that parameters are centered on the expected values, with more variability at level 2 (due to the lower sample size) than at level 1.
+```{r warning=FALSE,message=FALSE,out.width='100%'}
+MCFAsim_powerPlots(res=res.TCS,results=results.TCS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=3,out="parDistrW")
+MCFAsim_powerPlots(res=res.TCS,results=results.TCS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=3,out="parDistrB")
+```
+
+<br>
+
+### MDMQ {.tabset .tabset-fade .tabset-pills}
+
+#### OVERALL
+
+First, we check convergence and Heywood cases overall.
+```{r }
+round(100*nrow(res.MDMQ[res.MDMQ$converged==TRUE,])/nrow(res.MDMQ),2) # almost 100% converged
+round(100*nrow(res.MDMQ[res.MDMQ$converged==TRUE&res.MDMQ$negVariance!=0,])/ # very low % of Heywood cases
+        nrow(res.TDS[res.MDMQ$converged==TRUE,]),2)
+```
+
+<br>
+
+#### CONVERGENCE
+
+Second, we plot convergence against simulation conditions (i.e., sample sizes and loadings). We can see that convergence rates are always very high, with the exception of cases with **LOAD = .4 and N_2 < 100**.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="conv",span=.5)
+```
+
+<br>
+
+#### HEYWOOD CASES
+
+Third, we plot the rate of Heywood cases against simulation conditions (i.e., sample sizes and loadings). We can see that most Heywood cases are found with **LOAD = 0.4**, showing unsatisfactory Heywood Cases rate for **N2 < 150**. In contrast, Heywood cases are very rare with LOAD = 0.6 or 0.8. 
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="neg",span=.4)
+```
+
+<br>
+
+#### FIT INDICES
+
+Fourth, we visualize the distributions of fit indices, and we plot the rate of satisfactory fit against simulation conditions (i.e., sample sizes and loadings). Overall, fit index distributions are centered on the expected values, with only a minority of cases showing fit indices outside the cut-off ranges. **SRMR at the within level** is strongly influenced by N_2, with 0% of cases with SRMR-W < .60 for **LOAD = 0.8 and N_2 < 100**, **LOAD = 0.6 and N_2 < 150**, and **LOAD = 0.4 and N_2 < 200**.
+```{r warning=FALSE,message=FALSE}
+# overall
+par(mfrow=c(2,2))
+hist(res.MDMQ$rmsea,col="black",breaks=40)
+hist(res.MDMQ$cfi,col="black",breaks=40)
+hist(res.MDMQ$srmr_between,col="black",breaks=40)
+hist(res.MDMQ$srmr_within,col="black",breaks=40)
+
+# RMSEA
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="rmsea",span=.4)
+
+# CFI
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="cfi",span=.4)
+
+# SRMR within
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="srmrW",span=.4)
+
+# SRMR between
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="srmrB",span=.4)
+```
+
+<br>
+
+#### PARAMETERS
+
+Finally, we visualize the distributions of the parameter estimates over sample sizes at level 1, and considering only the extreme values for N_2 (i.e., 50 and 1,0000). We can see that parameters are centered on the expected values, with more variability at level 2 (due to the lower sample size) than at level 1.
+```{r warning=FALSE,message=FALSE,out.width='100%'}
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="parDistrW")
+MCFAsim_powerPlots(res=res.MDMQ,results=results.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="parDistrB")
+```
+
+<br>
+
+## 3.3. Power plots {.tabset .tabset-fade .tabset-pills}
+
+Finally, we visually inspect the power plots, that is the rate of cases satisfying our criterion for statistical power (i.e., standardized loadings significantly > .15) based on sample sizes and loading values. Note that these plots are computed considering only cases of convergence with non-negative variance estimates.
+
+### TDS {.tabset .tabset-fade .tabset-pills}
+
+#### Level 1
+
+At level 1 (within), statistical power is always satisfactory, with the only exception of cases with **LOAD = 0.4 and N_2 < 100**. The minimum acceptable sample size in this scenario would be **N_2 = 100**, regardless of the sample size at level 1.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(results=results.TDS,res=res.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="par.15W",span=.2)
+```
+
+<br>
+
+#### Level 2
+
+At level 2 (between), statistical power is always satisfactory when **LOAD > 0.4 and N_2 > 50**. In contrast, a level-2 sample size of N_2 = 500 or more would be required for having adequate power with **LOAD = 0.4**.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(results=results.TDS,res=res.TDS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=4,out="par.15B")
+```
+
+<br>
+
+### TCS {.tabset .tabset-fade .tabset-pills}
+
+#### Level 1
+
+At level 1 (within), statistical power is always satisfactory, with the only exception of cases with **LOAD = 0.4 and N_2 < 150**. The minimum acceptable sample size in this scenario would be **N_2 = 150**, regardless of the sample size at level 1.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(results=results.TCS,res=res.TCS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=3,out="par.15W",span=.2)
+```
+
+<br>
+
+#### Level 2
+
+At level 2 (between), statistical power is always satisfactory when **LOAD > 0.4 and N_2 > 50**. In contrast, a level-2 sample size of N_2 = 800 or more would be required for having adequate power with **LOAD = 0.4**.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(results=results.TCS,res=res.TCS,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=3,out="par.15B")
+```
+
+<br>
+
+### MDMQ {.tabset .tabset-fade .tabset-pills}
+
+#### Level 1
+
+At level 1 (within), statistical power is always satisfactory, with the only exception of cases with **LOAD = 0.4 and N_2 < 100**. The minimum acceptable sample size in this scenario would be **N_2 = 100**, regardless of the sample size at level 1.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(results=results.MDMQ,res=res.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="par.15W",span=.2)
+```
+
+<br>
+
+#### Level 2
+
+At level 2 (between), statistical power is always satisfactory when **LOAD > 0.4 and N_2 > 50**. In contrast, a level-2 sample size of N_2 = 300 or more would be required for having adequate power with **LOAD = 0.4 and N_1 > 10**, whereas an even larger sample size (around 500 or more) would be required with **LOAD = .04 and N_1 < 15**.
+```{r warning=FALSE,message=FALSE}
+MCFAsim_powerPlots(results=results.MDMQ,res=res.MDMQ,SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="par.15B")
+```
+
+<br>
+<br>
+
+# 4. Conclusions 
+
+Overall, our simulations produce **reliable results**, as indicated by the low rate of non-convergence and Heywood cases, and the distributions of fit indices and estimated parameters.
+
+However, all cases with the pre-defined population parameters were set to **LOAD = 0.4** were problematic in terms of convergence (unsatisfactory convergent rate with N_2 < 100 for the MDMQ), Heywood cases (unsatisfactory rate of negative variances for N_2 < 150 for all scales), and SRMR within (unsatisfactory for N_2 < 200 for the MDMQ).
+
+Cases with **LOAD = 0.4** were problematic also in terms of **power at level 2**, since this scenario (i.e., sampling data from a population with all loadings close to 0.4) would require a very large sample size (i.e., 500 or more participants for the MDMQ and the TDS, 800 or more participants for the TCS).
+
+In contrast, all other cases with **LOAD = 0.60** or higher, and **N_2 = 100** or higher showed satisfactory convergence and **adequate power** (i.e., > 80%). Of note, the number of observations per participant (N_1) is not very relevant (although showing some slight effect) in determining convergence and power, implying that a parsimonious criterion of having **5 or more responses** might be used.
+
+<br>
+
+In conclusion, considering also practical constraints such as the **limited resources** (time & money) available for data collection, we define our "stop rule" by relying on the assumption of sampling data from a **population with factor loadings close to 0.6 or higher**. Our "stop rule" to define a "reasonable" sample size will be:
+
+> ***Having at least 100 participants with 5 or more observation each*** 
+
+<br>
+
+Here, we show again the power plots generated for MDMQ items, identified as the most demanding model in terms of parameters.
+```{r warning=FALSE,message=FALSE}
+library(ggplot2); library(gridExtra)
+library(extrafont); loadfonts(device = "win"); windowsFonts(cal=windowsFont("Calibri Light"))
+p1 <- MCFAsim_powerPlots(results=results.MDMQ[results.MDMQ$N2 <= 200,],
+                   res=res.MDMQ[res.MDMQ$N_2 <= 200,],
+                   SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="par.15W",span=.9) +
+  theme(text=element_text(family="cal",size=14), title = element_text(size=10))
+p2 <- MCFAsim_powerPlots(results=results.MDMQ[results.MDMQ$N2 <= 500 ,],
+                   res=res.MDMQ[res.MDMQ$N_2 <= 500,],
+                   SSizes1="N1",SSizes2="N2",LOADS="LOAD",n.items=9,out="par.15B",span=.2) +
+  theme(text=element_text(family="cal",size=14), title = element_text(size=10))
+grid.arrange(p1,p2,nrow=1)
+```
+
+<br>
+
+<br>
+
+## Acknowledgments
+
+We thank **Prof. Terrence Jorgensen** for his helpful recommendations for simulating multilevel multivariate datasets within the lavaan Google group:  https://groups.google.com/g/lavaan/c/4V-MGo7qkgA/m/3O5VpFaDAgAJ
+
+<br>
+
+# References
+
+- Boomsma, A. (1987). The robustness of maximum likelihood estimation in structural equation models. In P. Cuttance & R. Ecob (Eds.), *Structural modeling by example* (pp. 160–188). New York, NY: University of Cambridge.
+
+- Hox, J. J., & Maas, C. J. M. (2001). The accuracy of multilevel structural equation modeling with pseudobalanced groups and small samples. *Structural Equation Modeling*, 8(2), 157–174. https://doi.org/10.1207/S15328007SEM0802_1
+
+- Hsu, H. Y., Kwok, O. M., Lin, J. H., & Acosta, S. (2015). Detecting misspecified multilevel structural equation models with common fit indices: A Monte Carlo study. *Multivariate Behavioral Research*, 50(2), 197-215. https://doi.org/10.1080/00273171.2014.977429
+
+- Loehlin, J. C. (2004). *Latent variable models: An introduction to factor, path, and structural equation analysis* (4th ed.). Mahwah, NJ: Erlbaum.
+
+- Wilhelm, P., & Schoebi, D. (2007). Assessing mood in daily life: Structural validity, sensitivity to change, and reliability of a short-scale to measure three basic dimensions of mood. *European Journal of Psychological Assessment*, 23(4), 258–267. https://doi.org/10.1027/1015-5759.23.4.258
+
+<br>
+
+## R packages
+
