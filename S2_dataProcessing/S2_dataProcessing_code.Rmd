@@ -1,0 +1,1482 @@
+---
+title: "Workplace stress in real time: Three parsimonious scales for the experience sampling measurement of stressors and strain at work"
+subtitle: "Supplementary material S2: Data pre-processing code"
+bibliography: [packagesDataProc.bib]
+nocite: '@*'
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    css: styles.css
+  pdf_document: default
+  word_document: default
+  theme: united
+---
+
+<br>
+
+**Luca Menghini,$^1$ Massimiliano Pastore,$^2$ & Cristian Balducci$^1$**
+
+$^1$Department of Psychology, University of Bologna, Bologna, Italy
+
+$^2$Department of Developmental and Social Psychology, University of Padova, Padua, Italy
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+# Aims and contents
+
+The document includes the R code used to pre-process the raw data collected with the Sensus Mobile app ([Xiong et al., 2016](#ref)) and the Typeform (Barcelona, Spain) platform for the study "Workplace stress in real time: Three parsimonious scales for the experience sampling measurement of stressors and strain at work". Specifically, it covers the [reading and integration](#read) of single raw data files, the [recoding](#recode) of the measured variables, and the [anonymization](#anonim) of the sample to produce the GDPR-compliant data files used in the main analyses, accompanied with a data dictionary.
+
+<br>
+
+The following R packages are used in this document (see [References](#ref) section):
+```{r }
+# required packages
+packages <- c("jsonlite","tcltk","mgsub","birk","dplyr","tidyr","labourR","data.table","magrittr","plyr")
+
+# generate packages references
+knitr::write_bib(c(.packages(), packages),"packagesDataProc.bib")
+
+# # run to install missing packages
+# xfun::pkg_attach2(packages, message = FALSE); rm(list=ls())
+```
+
+<br>
+
+# 1. Data reading {#read}
+
+Frist, we read the raw data files obtained with the experience sampling method `ESMdata` and the preliminary questionnaire `RETROdata`.
+```{r }
+# removing all objets from the workspace
+rm(list=ls())
+
+# setting system time zone to GMT (for consistent temporal synchronization)
+Sys.setenv(tz="GMT")
+```
+
+<br>
+
+## 1.1. ESM data
+
+Here, the `readSurveyData()` function is used to read the raw JSON data saved by the Sensus Mobile app and downloaded from our private AWS S3 bucket to the `data.path` directory. The `probe.definition` argument is used to read the Probe Definition files downloaded from the Sensus Mobile app (*Protocol -> Probe -> Scripted Interaction -> Share definition*) to couple input IDs with input names (i.e., item labels).
+
+<details><summary>show `readSurveyData()`</summary>
+<p>
+```{r }
+readSurveyData <- function(data.path,probe.definition){ require(jsonlite); require(tcltk); options(digits.secs=3)
+
+  # 1. Reading data
+  # .......................................
+  # listing files in data path
+  paths = list.files(data.path,recursive=TRUE,full.names=TRUE,include.dirs=FALSE)
+  # taking only variables of interest
+  var.names <- c("ParticipantId","Timestamp","InputId","Response","RunTimestamp","SubmissionTimestamp",
+                 "ScriptName","ProtocolId","$type")
+  # dataframe creation and population
+  data <- as.data.frame(matrix(nrow=0,ncol=9))
+  colnames(data) <- var.names
+  ScheduledTimestamp <- vector()
+  pb <- tkProgressBar("(1/2) Data reading:", "Data reading %",0, 100, 0) # progress bar
+  for(path in paths){ info <- sprintf("%d%% done", round(which(paths==path)/length(paths)*100))
+    setTkProgressBar(pb, round(which(paths==path)/length(paths)*100), title=paste("(1/2) Data reading:",info),info)
+    if(file.info(path)$size>0){ # read only Datum files (i.e., containing ScriptDatum, if > 0 Kb)
+      new.data <- read_json(path,simplifyDataFrame=TRUE)
+      if(class(new.data)=="data.frame" & !is.null(new.data$Response)){ # keep only files with information
+        if(class(new.data$Response)=="data.frame"){ # sometimes responses are read as dataframe
+          new.data$Response <- as.character(new.data$Response$`$values`)}
+        data <- rbind(data,new.data[var.names])}}} 
+  close(pb)
+  # no responses are saved when participant or input ID is not showed (those rows are removed)
+  data <- data[!is.na(data$ParticipantId),]
+  data <- data[!is.na(data$InputId),]
+  # some other minor settings
+  row.names(data) <- as.character(1:nrow(data))
+  data$Timestamp <- as.POSIXct(data$Timestamp,format="%Y-%m-%dT%H:%M:%S")
+  names(data)[9] <- "os" # $type as OS (android or iOS)
+  data[,9] <- gsub("Sensus.Probes.User.Scripts.ScriptDatum, Sensus","",data[,9])
+  
+  # 2. Response Ids as Item labels (reported in Probe Definition file) 
+  # ...............................................................
+  if(!is.na(probe.definition)){
+    readProbe <- function(path){ # function to read Probe Definition files
+      probedefinition <- read_json(path,simplifyDataFrame=TRUE) # first probe definition file
+      # reading input labels of the first inputGroup
+      inputs <- probedefinition$ScriptRunners$`$values`$Script$InputGroups$`$values`[[1]]$Inputs$`$values`[[1]]$Name
+      # other protocol information
+      infos <- probedefinition$ScriptRunners$`$values`$Script$InputGroups$`$values`[[1]]
+      PROTOCOL <- data.frame(protocolName=probedefinition$Protocol$Name,protocolId=probedefinition$Protocol$Id,
+                             scriptName=infos$Name,inputName=inputs,inputId=infos$Inputs$`$values`[[1]]$Id)
+      # adding other InputGroups when more than one
+      if(length(probedefinition$ScriptRunners$`$values`$Script$InputGroups$`$values`)>1){
+        for(i in 2:length(probedefinition$ScriptRunners$`$values`$Script$InputGroups$`$values`)){
+          inputs <- probedefinition$ScriptRunners$`$values`$Script$InputGroups$`$values`[[i]]$Inputs$`$values`[[1]]$Name
+          infos <- probedefinition$ScriptRunners$`$values`$Script$InputGroups$`$values`[[i]]
+          PROTOCOL <- rbind(PROTOCOL,data.frame(protocolName=probedefinition$Protocol$Name,
+                                                protocolId=probedefinition$Protocol$Id,
+                                                scriptName=infos$Name,inputName=inputs,
+                                                inputId=infos$Inputs$`$values`[[1]]$Id)) }}
+      return(PROTOCOL) }
+    # listing files in probe.definition path
+    paths = list.files(probe.definition,recursive=TRUE,full.names=TRUE,include.dirs=FALSE)
+    PROTOCOL <- readProbe(paths[1])
+    # adding other Probe Definition files when more than one
+    if(length(list.files(probe.definition))>1){
+      for(path in paths[2:length(paths)]){
+        PROTOCOL2 <- readProbe(path)
+        PROTOCOL <- rbind(PROTOCOL,PROTOCOL2) }}
+    # using Probe Definition info to convert inputID to inputName
+    pb <- tkProgressBar("(2/2) Data processing:", "Data processing %",0, 100, 0) # progress bar
+    for(i in 1:nrow(data)){ info <- sprintf("%d%% done", round(i/nrow(data)*100))
+    setTkProgressBar(pb, round(i/nrow(data)*100), title=paste("(2/2) Converting InputIDs to InputNames", info), info)
+      for(j in 1:nrow(PROTOCOL)){ if(!is.na(data[i,3]) & data[i,3]==PROTOCOL[j,5]){ 
+        data[i,3] <- as.character(PROTOCOL[j,4]) }}}
+    close(pb) }
+  
+  # 3. Cleaning and unlisting Response data
+  # ...............................................................
+  # cleaning categorical items from Sensus system info
+  data$Response <- gsub("list","",data$Response)
+  data$Response <- gsub(paste("c","\\(|\\)",sep=""),"",data$Response)
+  data$Response <- gsub("\\(|\\)","",data$Response)
+  data$Response <- gsub("\\[|\\]","",data$Response)
+  data$Response <- gsub("\\$type` = \"System.Collections.Generic.List`1System.Object, mscorlib, mscorlib\", ",
+                        "", data$Response)
+  data$Response <- gsub("\\$values","",data$Response)
+  data$Response <- gsub('``` = ', "",data$Response)
+  data$Response <- gsub('\ ', "",data$Response)
+  data$Response <- gsub('\"', "",data$Response)
+  data$Response <- gsub('\"No\"', "No",data$Response)
+  data$Response <- gsub('\"Sì\"', "Si",data$Response)
+  # unlisting Response column
+  if(class(data$Response)=="data.frame"){ data$Response <- as.character(data$Response$`$values`[[1]])
+  } else { data$Response <- as.character(data$Response) }
+  
+  # 4. Encoding time information
+  # ...............................................................
+  # TIMESTAMP variables
+  data[,c("Timestamp","RunTimestamp",
+          "SubmissionTimestamp")] <- lapply(data[,c("Timestamp","RunTimestamp",
+                                                    "SubmissionTimestamp")],function(x)
+                                                      as.POSIXct(x,format="%Y-%m-%dT%H:%M:%OS")+1*60*60) # adding 1h
+  # Create indicator for the week day (e.g. Monday=1)
+  data$day.of.week <- as.POSIXlt(data$RunTimestamp)$wday
+  
+  # 5. Sorting columns and Reshaping
+  # ...............................................................
+  colnames(data)[1] <- "ID"
+  data <- data[,c("ID","os","ProtocolId","ScriptName","day.of.week","RunTimestamp",
+                  "SubmissionTimestamp","InputId","Response")]
+  # reshaping
+  data <- reshape(data,v.names=c("Response"),timevar=c("InputId"),idvar=c("RunTimestamp","SubmissionTimestamp"),
+                  direction=c("wide"),sep="")
+  colnames(data) <- gsub("Response","",colnames(data)) # removing label "Response" from ResponseId
+  # sorting by ID and RunTimestamp
+  data <- data[order(data$ID,data$RunTimestamp),]
+  # Create row identifier within each day (within.day)
+  data <- plyr::ddply(data,c("ID","day.of.week"),transform,within.day=seq_along(day.of.week))
+  # within.day just after day.of.week column
+  data <- data.frame(cbind(data[1:3],data[ncol(data)],data[5:ncol(data)-1]))
+  data <- data[order(data$ID,data$RunTimestamp),]
+  
+  # 6. # Correcting wrongly encoded item labels
+  # ...............................................................
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"v1.male.bene"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X17758111.14e5.4f30.a113.06e2a08468ed"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"t1.rilassato.teso"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X17758111.14e5.4f30.a113.06e2a08468ed"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"e1.stanco.sveglio"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X3edca97c.e6a6.4146.9158.b35088f48033"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"v2.soddisfatto.insoddisfatto"] <-   
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"eaa55e1f.26ec.43e0.9e18.ee853ed0acfb"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"t2.agitato.calmo"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X15fff3cc.3d17.483b.ae5f.fee562a6a916"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"e2.pieno.privodenergia"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X86eb9c9c.1426.4698.a3c4.7f0d0a449bf3"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"v3.positivo.negativo"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X1c5d39de.1bb6.4499.8b2d.7799342cc5d2"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"t3.nervoso.tranquillo"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"c70b6861.e839.4926.ba3b.2627ab964df2"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"e3.affaticato.fresco"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X8b9d46c9.d406.44d7.9784.6a8542b3da3c"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"WHAT"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"e869f6f8.6c65.4d73.921e.6aeeddf4f452"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"HOW"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"c9bf9854.adeb.4138.ace0.2507a25304d4"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"nPEOPLE"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X814adbd8.c4f3.4948.83f3.77d119226bf5"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"WHOM"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"b2f5e3a2.0f98.49dd.9934.b851b36b8407"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"d1.da.fare"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"ffa2f10f.838b.48e3.87af.357a412c3eca"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"d2.veloce"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X1939307c.ef3b.41b2.870a.d3feecc6f189"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"d3.multitask"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"f1ff6f5e.1861.419a.9be1.e22266c0d264"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"d4.intensa"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X68909230.3374.4f21.a47f.d4816048a96c"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"c1.cambiare"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"dc871f0d.2da0.4f31.ab8d.5372f5acf5eb"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"c2.come"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X4ab74ec5.8585.4154.bb01.f049f66ebb56"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"c3.tempo"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"X83c7368b.fce3.406c.804e.760af23cf6a6"]
+  data[data$ID=="LRSM1963"&is.na(data$OCS),"OCS"] <- 
+    data[data$ID=="LRSM1963"&is.na(data$OCS),"e3f552b1.d076.43ee.ade9.eee2c6d26316"]
+  data <- data[,1:35]
+  
+  # ID as factor
+  data$ID <- as.factor(as.character(data$ID))
+  
+  return(data) }
+```
+</p>
+</details>
+```{r warning=FALSE,message=FALSE}
+# ESM data reading & encoding
+ESMdata <- readSurveyData(data.path="data",probe.definition="probe")
+
+# sanity check (2192, 176)
+cat("Read",nrow(ESMdata),"observervations from",nlevels(ESMdata$ID),"participants")
+```
+
+<br>
+
+## 1.2. RETROdata
+
+Here, we read the data obtained with the retrospective preliminary questionnaire and exported as a CSV file from Typeform. We can already see a No. of rows higher than the No. of participants' identification codes, implying some double responses. 
+```{r }
+# retrospective data reading
+RETROdata <- read.csv("responses.csv")
+
+# sanity check (204, 201)
+cat("Read",nrow(RETROdata),"observervations from",
+    nlevels(as.factor(as.character(RETROdata$Inserisca.il.suo..CODICE.PERSONALE.))),"participants")
+```
+
+<br>
+
+# 2. Data recoding {#recode}
+
+Second, we recode the two datasets by removing unuseful columns, re-setting variable labels and classes, recoding variables, and renaming relevant columns. We also create some variables to encode participants' compliance, and we remove double responses.
+
+## 2.1. ESMdata
+
+Here, we recode `ESMdata`. 
+
+### 2.1.1. Variable recoding
+
+We start by renaming mood items and by recoding them to express negative mood dimensions.
+```{r warning=FALSE}
+# converting numeric responses as numeric
+nums <- c("d1.da.fare","d2.veloce","d3.multitask","d4.intensa","c1.cambiare","c2.come","c3.tempo","OCS",
+          "t1.rilassato.teso","e1.stanco.sveglio","v2.soddisfatto.insoddisfatto","t2.agitato.calmo",
+          "e2.pieno.privodenergia","v3.positivo.negativo","t3.nervoso.tranquillo","e3.affaticato.fresco",
+          "v1.male.bene","event1.negativi","event2.intensity.n","event3.positivi","event4.intensity.p","nPEOPLE")
+ESMdata[,nums] <- lapply(ESMdata[,nums],as.numeric)
+
+# HEDONIC TONE = Negative Valence (NA)
+ESMdata$v1.male.bene <- 8 - ESMdata$v1.male.bene   
+ESMdata$v3.positivo.negativo <- 8 - ESMdata$v3.positivo.negativo 
+colnames(ESMdata)[which(colnames(ESMdata)=="v3.positivo.negativo")] <- "v3.negativo.positivo" # correcting incorrect label
+# NA items were differently labeled in survey 1 ("Survey Mattina") and in all other surveys
+# item v2 was "Sat. - Unsat." in survey 1 and "Unsat. - Sat." in all other surveys
+# item v3 was "Posit. - Neg." in survey 1 and "Neg. - Posit." in all other surveys
+for(i in 1:nrow(ESMdata)){
+  if(ESMdata[i,"ScriptName"]=="Survey Mattina"&!is.na(ESMdata[i,"v2.soddisfatto.insoddisfatto"])){
+    ESMdata[i,"v2.soddisfatto.insoddisfatto"] <- 8 - ESMdata[i,"v2.soddisfatto.insoddisfatto"]}
+  if(ESMdata[i,"ScriptName"]=="Survey Mattina"&!is.na(ESMdata[i,"v3.negativo.positivo"])){
+    ESMdata[i,"v3.negativo.positivo"] <- 8 - ESMdata[i,"v3.negativo.positivo"]}}
+    
+# TENSE AROUSAL (TA)
+ESMdata$t2.agitato.calmo <- 8 - ESMdata$t2.agitato.calmo
+ESMdata$t3.nervoso.tranquillo <- 8 - ESMdata$t3.nervoso.tranquillo
+    
+# ENERGETIC AROUSAL = Fatigue (FA)
+ESMdata$e1.stanco.sveglio <- 8 - ESMdata$e1.stanco.sveglio
+ESMdata[!is.na(ESMdata$e3.affaticato.fresco)&ESMdata$e3.affaticato.fresco=="NULL","e3.affaticato.fresco"] <- NA
+ESMdata$e3.affaticato.fresco <- 8 - as.numeric(as.character(ESMdata$e3.affaticato.fresco))
+```
+
+<br>
+
+Then, we sort `ESMdata` columns to reflect item order in the ESM forms, we select the considered variables, and we rename the columns in a simpler way.
+```{r }
+# selecting and sorting columns
+ESMdata <- cbind(ESMdata[,1:8], #......................................................... Participant and occasion info
+              
+              ESMdata$v1.male.bene,ESMdata$v2.soddisfatto.insoddisfatto,ESMdata$v3.negativo.positivo, #.... Strain (Mood)
+              ESMdata$t1.rilassato.teso,ESMdata$t2.agitato.calmo,ESMdata$t3.nervoso.tranquillo,
+              ESMdata$e1.stanco.sveglio,ESMdata$e2.pieno.privodenergia,ESMdata$e3.affaticato.fresco,
+                  
+              ESMdata$WHAT,ESMdata$HOW,ESMdata$WHOM,ESMdata$nPEOPLE, #..................................... Work sampling
+                  
+              ESMdata$d1.da.fare,ESMdata$d2.veloce,ESMdata$d3.multitask,ESMdata$d4.intensa, #.. Stressors (demand & ctrl)
+              ESMdata$c1.cambiare,ESMdata$c2.come,ESMdata$c3.tempo)
+
+# renaming columns
+colnames(ESMdata)[9:ncol(ESMdata)] <- c("v1","v2","v3","t1","t2","t3","f1","f2","f3",
+                                        "WHAT","HOW","WHOM","nPeople","d1","d2","d3","d4","c1","c2","c3")
+```
+
+<br>
+
+Finally, we recode the remaining categorical variables, and we translate the work sampling items categories in English.
+```{r }
+# from ProtocolId (different protocols per gender) to "gender"
+colnames(ESMdata)[which(colnames(ESMdata)=="ProtocolId")] <- "gender"
+ESMdata$gender <- gsub("ProtocolWork","",ESMdata$gender)
+ESMdata$gender <- as.factor(gsub("6de7da11-4919-4fc3-a420-9d9b42024526","M",ESMdata$gender))
+    
+# WORK SAMPLING: KNOWLEDGE WORK ACTIVITIES (what)
+ESMdata$WHAT <- gsub("ANALISIesame/elaborazionediinformazioniqualitativeoquantitativepermigliorarnelacomprensione",
+                     "ANALYSIS",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("RICERCAOACQUISIZIONEINFORMAZIONIconsultazionedifontielettroniche/cartacee,studiooapprendimentopersviluppareconoscenzepersonali,progetti,prodottioservizi",
+                     "ACQUISITION",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("AUTHORINGcreazione/composizionedicontenutitestualiomultimediali",
+                     "AUTHORING",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("NETWORKINGinterazioneconpersone/entiperraccogliere/scambiareinformazioniofarecontatti",
+                     "NETWORKING",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("DIVULGAZIONEinsegnamento,presentazioneocondivisionediinformazioni",
+                     "DISSEMINATION",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("ATTIVITÀAMMINISTRSTIVEpraticheburocraticheroutinarie",
+                     "ADMINISTRATIVE",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("PAUSA-->indicaancheL'ATTIVITÀSVOLTAPRIMAdellapausaeriferiscitiaquestaperleprossimedomande",
+                     "BREAK",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("ALTRO","OTHER",ESMdata$WHAT)
+ESMdata$WHAT <- gsub("OTHER,","",ESMdata$WHAT) # when OTHER and another activity, only the second activity is reported
+ESMdata$WHAT <- gsub("\n","",ESMdata$WHAT)
+    
+# WORK SAMPLING: MEAN OF WORK (how)
+ESMdata$HOW <- gsub("Alcomputer","PC",ESMdata$HOW)
+ESMdata$HOW <- gsub("Facciaafaccia/oralmente","FACE2FACE",ESMdata$HOW)
+ESMdata$HOW <- gsub("Condocumenticartacei","PAPER",ESMdata$HOW)
+ESMdata$HOW <- gsub("Altelefono","PHONE",ESMdata$HOW)
+ESMdata$HOW <- gsub("Videoconferenzaes.Skype","SKYPE",ESMdata$HOW)
+ESMdata$HOW <- gsub("Consmarphone/tablet","SMARTPHONE",ESMdata$HOW)
+ESMdata$HOW <- gsub("Altro","OTHER",ESMdata$HOW)
+    
+# WORK SAMPLING: PEOPLE INVOLVED IN THETASK (whom)
+ESMdata$WHOM <- gsub("Nessuno","ALONE",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Colleghi","COLL",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Sottoposti","UNDER",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Superiori","OVER",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Fornitorioaltricollaboratoriesterni","EXTERNAL",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Clienti/utentidelservizio","CUSTOMER",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Familiari/amici","FAMILY",ESMdata$WHOM)
+ESMdata$WHOM <- gsub("Altro","OTHER",ESMdata$WHOM)
+
+# categorical variables as factor
+ESMdata[,c("ID","os","WHAT","HOW","WHOM")] <- lapply(ESMdata[,c("ID","os","WHAT","HOW","WHOM")],as.factor)
+```
+
+<br>
+
+### 2.1.2. Time & double responses
+
+Then, we use the `time.AND.double` function for checking and adjusting time-related variables (i.e., `within.day` and `day.of.week`), **fixing daylight time** (i.e., between March 29th and October 27th, 2019), and **removing double responses**. 
+
+<details><summary>**Show time.AND.double**</summary>
+<p>
+```{r }
+time.AND.double <- function(data=data,doubleSurvey.exclude=TRUE,doubleProtocol.exclude=TRUE){ require(mgsub)
+  
+# 1) Fixing double surveys
+# ..................................................................
+  data$ID <- as.character(data$ID)
+  
+  # 1.1. participants who re-runned the protocol and changed their id
+  data[data$ID=="Livio",1] <- "Gftg1945"
+  
+  # 1.2. participants with the same id (siblings?)
+  # LFAI1940 (1 male, 1 female) --> LFAI19402 = male
+  data[data$ID=="LFAI1940"&data$gender=="M","ID"] <- "LFAI19402"
+  # MCVD1959 (2 males) --> MCVD19592 started later
+  data[(data$ID=="MCVD1959"&as.POSIXct(as.character(data$RunTimestamp))>as.POSIXct("2019-06-24 08:15:00 GMT")),"ID"] <- "MCVD19592"
+  
+  # saving sample information
+  N2.original <- length(levels(as.factor(data$ID))) # 177
+  N1.original <- nrow(data) # 2192
+  
+  # 1.3. excluding double response to the same survey (doubleSurvey.exclude)
+  # ..................................................................
+  if(doubleSurvey.exclude==TRUE){
+    # RSCC1961 on FRY sent twice responses to survey5 -> take the 2nd one bcs SC is missing in the 1st one
+    data <- data[!(data$ID=="RSCC1961" & as.character(data$RunTimestamp)=="2018-11-16 14:50:23.035"),]
+    # MFPW1957 on FRY sent twice responses to survey3 -> take the 2nd one bcs SC is missing in the 1st one
+    data <- data[!(data$ID=="MFPW1957" & as.character(data$RunTimestamp)=="2018-12-07 13:21:24.265"),]
+    # VSLF1952 on MON sent three times responses to survey 6 -> take the 2nd bcs data are missing in the 1st and 3rd
+    data <- data[!(data$ID=="VSLF1952" & as.character(data$RunTimestamp)=="2019-11-04 16:38:53.588" &
+                     is.na(data$c3)),]
+    data <- data[!(data$ID=="VSLF1952" & as.character(data$RunTimestamp)=="2019-11-04 16:44:32.546"),]}
+  
+  # saving sample information
+  N1.doubleSurvey <- N1.original - nrow(data) # 2
+  
+  # 1.4. excluding double protocols (i.e., participants who re-runned the protocol (doubleProtocol.exclude)
+  # ..................................................................
+  if(doubleProtocol.exclude==TRUE){
+    
+    # 1.4.1. re-runned the protocol because of technical problems on the first time
+    # ..............................................................................
+    # MFPW1957 repeated the protocol (technical problems on Monday)
+    data <- data[!(data$ID=="MFPW1957"&substr(data$RunTimestamp,start=6,stop=10)=="12-10"),]
+    # 05101985 repeated the protocol one day (technical problems)
+    data <- data[!(data$ID=="05101985" & data$day.of.week==5),]
+    data[data$ID=="Nico",1] <- "05101985"
+    # OQAB1946 repeated the protocol (technical problems on Monday)
+    data <- data[!(data$ID=="OQAB1946"&substr(data$RunTimestamp,start=6,stop=10)=="12-05"),]
+    # PFCZ1960 repeated the protocol (technical problems on Wednesday and Friday)
+    data <- data[!(data$ID=="PFCZ1960"&substr(data$RunTimestamp,start=6,stop=10)=="11-28"),]
+    data <- data[!(data$ID=="PFCZ1960"&substr(data$RunTimestamp,start=6,stop=10)=="11-30"),]
+    data <- data[!(data$ID=="PFCZ1960"&substr(data$RunTimestamp,start=6,stop=10)=="12-19"),]
+    data <- data[!(data$ID=="PFCZ1960"&substr(data$RunTimestamp,start=6,stop=10)=="12-21"),]
+    
+    # saving sample information
+    N1.doubleProtocol.tech <- N1.original - nrow(data) - N1.doubleSurvey # 17
+    
+    # 1.4.2. re-runned the protocol because of few surveys on the first time
+    # ..............................................................................
+    # EDLF1948 re-run the protocol on Monday (few surveys) and changed ID into EDLF1946
+    data <- data[!(data$ID=="EDLF1948"&data$day.of.week==1),]
+    data[(data$ID=="EDLF1946"&data$day.of.week==1),1] <- "EDLF1948" 
+    # Gcsb1961 repeted the protocol on Monday (few surveys)
+    data <- data[!(data$ID=="Gcsb1961" & substr(data$RunTimestamp,start=6,stop=10)=="02-18"),]
+    # APRT54 repeted the protocol on Monday (only 2 surveys)
+    data <- data[!(data$ID=="APRT54" & substr(data$RunTimestamp,start=6,stop=10)=="12-05"),]
+    # MMCP1956 repeted the protocol on Monday (few surveys)
+    data <- data[!(data$ID=="MMCP1956" & substr(data$RunTimestamp,start=6,stop=10)=="02-11"),]
+    # PSIS1945 repeated the protocol on Friday (few surveys)
+    data <- data[!(data$ID=="PSIS1945" & substr(data$RunTimestamp,start=6,stop=10)=="03-08"),]
+    # Ugiila17L repeated the protocol on Monday (only 1 survey)
+    data <- data[!(data$ID=="Ugiila17L" & substr(data$RunTimestamp,start=6,stop=10)=="03-18"),]
+    # FFCR1933 repeated the protocol on Monday (only 2 surveys)
+    data <- data[!(data$ID=="FFCR1933" & substr(data$RunTimestamp,start=6,stop=10)=="03-22"),]
+    # FS960214 repeated the protocol on Monday (only 1 survey)
+    data <- data[!(data$ID=="FS960214" & substr(data$RunTimestamp,start=6,stop=10)=="03-22"),]
+    # MAGV1960 repeated the protocol on Friday (only 1 survey)
+    data <- data[!(data$ID=="MAGV1960" & substr(data$RunTimestamp,start=6,stop=10)=="03-29"),]
+    # Gcrb1950 repeated the protocol on Monday (only 2 survey)
+    data <- data[!(data$ID=="Gcrb1950" & substr(data$RunTimestamp,start=6,stop=10)=="04-15"),]
+    # Adms1967 repeated the protocol on Monday (only 2 survey)
+    data <- data[!(data$ID=="Adms1967" & substr(data$RunTimestamp,start=6,stop=10)=="05-08"),]
+    # CCMC1967 repeated the protocol on Wednesday (2 + 2, taking first)
+    data <- data[!(data$ID=="CCMC1967" & substr(data$RunTimestamp,start=6,stop=10)=="11-06"),]
+    # MGRB1964 repeated the protocol on Wednesday (1 + 4, taking 4)
+    data <- data[!(data$ID=="MGRB1964" & substr(data$RunTimestamp,start=6,stop=10)=="04-03"),]
+    
+    # saving sample information
+    N1.doubleProtocol.few <- N1.original - nrow(data) - N1.doubleSurvey - N1.doubleProtocol.tech # 21
+    
+    # 1.4.3. re-runned the protocol on their initiative (some forgot to quit the app)
+    # ..............................................................................
+    # ABLM1923 repeated the protocol (Monday twice: 5 + 1) --> taking 5
+    data <- data[!(data$ID=="ABLM1923" & substr(data$RunTimestamp,start=6,stop=10)=="12-10"),]
+    # ETSF1950 repeated the protocol (Friday twice: 6 + 5, Wednesday twice: 4 + 5, Monday: 4 + 5) --> taking the earliest but on Wed
+    data <- data[!(data$ID=="ETSF1950" & substr(data$RunTimestamp,start=6,stop=10)=="01-21"),]
+    data <- data[!(data$ID=="ETSF1950" & substr(data$RunTimestamp,start=6,stop=10)=="01-23"),]
+    data <- data[!(data$ID=="ETSF1950" & substr(data$RunTimestamp,start=6,stop=10)=="01-25"),]
+    # data <- data[!(data$ID=="ETSF1950" & substr(data$RunTimestamp,start=6,stop=10)=="01-30"),]
+    # BDRB1955 repeated the protcol (Friday twice: 4 + 4) --> taking 4 (First)
+    data <- data[!(data$ID=="BDRB1955" & substr(data$RunTimestamp,start=6,stop=10)=="01-25"),]
+    # Edmf1950 repeated the protcol (Friday twice: 3 + 4) --> taking 3 (First)
+    data <- data[!(data$ID=="Edmf1950" & substr(data$RunTimestamp,start=6,stop=10)=="01-25"),]
+    # LCPP1945 repeated the protcol several times (Friday twice: 5 + 4) --> taking 5 (Second*)
+    data <- data[!(data$ID=="LCPP1945" & substr(data$RunTimestamp,start=6,stop=10)=="01-23"),]
+    data <- data[!(data$ID=="LCPP1945" & substr(data$RunTimestamp,start=6,stop=10)=="01-25"),]
+    data <- data[!(data$ID=="LCPP1945" & substr(data$RunTimestamp,start=6,stop=10)=="01-28"),]
+    data <- data[!(data$ID=="LCPP1945" & substr(data$RunTimestamp,start=6,stop=10)=="01-30"),]
+    data <- data[!(data$ID=="LCPP1945" & substr(data$RunTimestamp,start=6,stop=10)=="02-01"),]
+    data <- data[!(data$ID=="LCPP1945" & substr(data$RunTimestamp,start=6,stop=10)=="02-06"),]
+    # ANMA1938 repeated the protocol (Monday twice: 5 + 2) --> taking 5, (Wednesday twice: 7 + 4) --> taking 7 
+    data <- data[!(data$ID=="ANMA1938" & substr(data$RunTimestamp,start=6,stop=10)=="01-25"),]
+    data <- data[!(data$ID=="ANMA1938" & substr(data$RunTimestamp,start=6,stop=10)=="01-28"),]
+    data <- data[!(data$ID=="ANMA1938" & substr(data$RunTimestamp,start=6,stop=10)=="01-30"),]
+    data <- data[!(data$ID=="ANMA1938" & substr(data$RunTimestamp,start=6,stop=10)=="02-01"),]
+    # CLMB1961 repeated the protocol (Monday three times: 5 + 4 + 3) --> taking 5, 
+    #                                (Wednesday three times: 4 + 4 + 5) --> taking 4, 
+    #                                (Friday twice: 6 + 3) --> taking 6
+    data <- data[!(data$ID=="CLMB1961" & substr(data$RunTimestamp,start=6,stop=10)=="01-28"),]
+    data <- data[!(data$ID=="CLMB1961" & substr(data$RunTimestamp,start=6,stop=10)=="02-04"),]
+    data <- data[!(data$ID=="CLMB1961" & substr(data$RunTimestamp,start=6,stop=10)=="01-30"),]
+    data <- data[!(data$ID=="CLMB1961" & substr(data$RunTimestamp,start=6,stop=10)=="02-06"),]
+    data <- data[!(data$ID=="CLMB1961" & substr(data$RunTimestamp,start=6,stop=10)=="02-01"),]
+    # PVCR1961 repeated the protocol (Friday twice: 2 + 4) --> taking 4 
+    data <- data[!(data$ID=="PVCR1961" & substr(data$RunTimestamp,start=6,stop=10)=="03-15"),]
+    # ANMA1938 repeated the protocol (Monday twice: 5 + 2) --> taking 5, (wednesday twice: 7 + 4) --> taking 7 
+    data <- data[!(data$ID=="ANMA1938" & substr(data$RunTimestamp,start=6,stop=10)=="01-25"),]
+    data <- data[!(data$ID=="ANMA1938" & substr(data$RunTimestamp,start=6,stop=10)=="01-28"),]
+    # GMPM66 repeated the protocol (Wednesday twice: 5 + 3) --> taking 5 
+    data <- data[!(data$ID=="GMPM66" & substr(data$RunTimestamp,start=6,stop=10)=="03-18"),]
+    # FS960214 repeated the protocol (Wednesday twice: 4 + 2) --> taking 4 
+    data <- data[!(data$ID=="FS960214" & substr(data$RunTimestamp,start=6,stop=10)=="03-27"),]
+    # Gspt1958 repeated the protocol (Wednesday twice: 2 + 1) --> taking 2 
+    data <- data[!(data$ID=="Gspt1958" & substr(data$RunTimestamp,start=6,stop=10)=="03-27"),]
+    # Reve1933 repeated the protocol (Friday twice: 6 + 4) --> taking 6 
+    data <- data[!(data$ID=="Reve1933" & substr(data$RunTimestamp,start=6,stop=10)=="03-22"),]
+    # pdbr1957 repeated the protocol (Friday twice: 3 + 1, Monday twice: 3 + 2) --> taking 3 
+    data <- data[!(data$ID=="pdbr1957" & substr(data$RunTimestamp,start=6,stop=10)=="03-29"),]
+    data <- data[!(data$ID=="pdbr1957" & substr(data$RunTimestamp,start=6,stop=10)=="04-01"),]
+    # ZFBR50 repeated the protocol (Monday twice: 1 + 3) --> taking 3 , (Wednesday twice: 3+1 --> taking 3)
+    data <- data[!(data$ID=="ZFBR50" & substr(data$RunTimestamp,start=6,stop=10)=="03-11"),]
+    data <- data[!(data$ID=="ZFBR50" & substr(data$RunTimestamp,start=6,stop=10)=="03-27"),]
+    # AGPP1942 repeated the protocol (Friday 3 times: 4 + 1 + 5) --> taking 4 
+    data <- data[!(data$ID=="AGPP1942" & substr(data$RunTimestamp,start=6,stop=10)=="03-22"),]
+    data <- data[!(data$ID=="AGPP1942" & substr(data$RunTimestamp,start=6,stop=10)=="03-29"),] # stop after April 2nd
+    data <- data[!(data$ID=="AGPP1942" & as.POSIXct(as.character(data$RunTimestamp))>as.POSIXct("2019-04-02 08:15:00 GMT")),]
+    # AMMP1969 repeated the protocol (Friday twice: 4 + 2) --> taking 4, (Monday twice: 4 + 1) --> taking 4
+    data <- data[!(data$ID=="AMMP1969" & substr(data$RunTimestamp,start=6,stop=10)=="03-22"),]
+    data <- data[!(data$ID=="AMMP1969" & substr(data$RunTimestamp,start=6,stop=10)=="03-25"),]
+    # LRSM1963 repeated the protocol (Wednesday twice: 3 + 3) --> taking first 
+    data <- data[!(data$ID=="LRSM1963" & substr(data$RunTimestamp,start=6,stop=10)=="04-17"),]
+    # Mr1960 repeated the protocol (Monday twice: 2 + 2) --> taking first 
+    data <- data[!(data$ID=="Mr1960" & substr(data$RunTimestamp,start=6,stop=10)=="05-13"),]
+    # MSRL1936 repeated the protocol (Monday twice: 2 + 2) --> taking first 
+    data <- data[!(data$ID=="MSRL1936" & substr(data$RunTimestamp,start=6,stop=10)=="09-16"),]
+    # MPPA1962 repeated the protocol (Monday twice: 1 + 2) --> taking second
+    data <- data[!(data$ID=="MPPA1962" & substr(data$RunTimestamp,start=6,stop=10)=="10-07"),]
+    # PZSP1951 repeated the protocol (Monday twice: 1 + 5) --> taking second
+    data <- data[!(data$ID=="PZSP1951" & substr(data$RunTimestamp,start=6,stop=10)=="10-18"),]
+    
+    # saving sample information
+    N1.doubleProtocol.their <- N1.original - nrow(data) - N1.doubleSurvey - N1.doubleProtocol.tech - 
+      N1.doubleProtocol.few # 114
+    
+    # 1.4.4. re-runned the protocol because of sickness abncence or other reasons
+    # ..............................................................................
+    # MGEB1960 repeated the protocol on friday bcs of sickness abcence for half of the day
+    data <- data[!(data$ID=="MGEB1960" & substr(data$RunTimestamp,start=6,stop=10)=="03-01"),]
+    # GMPM66 repeated the protocol bcs of sickness abcence (monday twice: 2 + 4) --> taking 4 
+    data <- data[!(data$ID=="GMPM66" & substr(data$RunTimestamp,start=6,stop=10)=="03-18"),]
+    
+    # saving sample information
+    N1.doubleProtocol.other <- N1.original - nrow(data) - N1.doubleSurvey - N1.doubleProtocol.tech - 
+      N1.doubleProtocol.few - N1.doubleProtocol.their} # 8
+  
+  # saving sample information
+  N1.doubleProtocol <- N1.original - nrow(data) - N1.doubleSurvey # 160
+  N2.doubleProtocol <- N2.original - nlevels(as.factor(as.character(data$ID)))
+    
+  # 2) correcting timestamp issues
+  # ..............................................................................
+  data$RunTimestamp <- as.character(data$RunTimestamp)
+  data$SubmissionTimestamp <- as.character(data$SubmissionTimestamp)
+  
+  # 2.1. Daylight time (adding 1h between March 29th and October 27th, 2019)
+  # ..................................................................
+  data[as.POSIXct(data$RunTimestamp) >
+         as.POSIXct("2019-03-29 00:00:00") & 
+         as.POSIXct(data$RunTimestamp) <
+         as.POSIXct("2019-10-27 00:00:00"),
+       "RunTimestamp"] <- as.character(as.POSIXct(as.character(data[as.POSIXct(data$RunTimestamp) > 
+                                                                      as.POSIXct("2019-03-29 00:00:00") & 
+                                                                      as.POSIXct(data$RunTimestamp) <
+                                                                      as.POSIXct("2019-10-27 00:00:00"),
+                                                                    "RunTimestamp"]))+1*60*60)
+  data[as.POSIXct(data$SubmissionTimestamp) >
+         as.POSIXct("2019-03-29 00:00:00") & 
+         as.POSIXct(data$SubmissionTimestamp) <
+         as.POSIXct("2019-10-27 00:00:00"),
+       "SubmissionTimestamp"] <- as.character(as.POSIXct(as.character(data[as.POSIXct(data$SubmissionTimestamp) > 
+                                                                      as.POSIXct("2019-03-29 00:00:00") & 
+                                                                      as.POSIXct(data$SubmissionTimestamp) <
+                                                                      as.POSIXct("2019-10-27 00:00:00"),
+                                                                    "SubmissionTimestamp"]))+1*60*60)
+  # recoding participants with updated time
+  data[data$ID=="ATEC1963" & substr(data$RunTimestamp,6,10)=="03-29",
+       "RunTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="ATEC1963" & substr(data$RunTimestamp,6,10)=="03-29",
+                                                                    "RunTimestamp"]))-1*60*60)
+  data[data$ID=="ATEC1963" & substr(data$SubmissionTimestamp,6,10)=="03-29",
+       "SubmissionTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="ATEC1963" &
+                                                                             substr(data$SubmissionTimestamp,6,10)=="03-29",
+                                                                    "SubmissionTimestamp"]))-1*60*60)
+  data[data$ID=="FS960214" & substr(data$RunTimestamp,6,10)=="03-29",
+       "RunTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="FS960214" & substr(data$RunTimestamp,6,10)=="03-29",
+                                                                    "RunTimestamp"]))-1*60*60)
+  data[data$ID=="FS960214" & substr(data$SubmissionTimestamp,6,10)=="03-29",
+       "SubmissionTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="FS960214" &
+                                                                             substr(data$SubmissionTimestamp,6,10)=="03-29",
+                                                                    "SubmissionTimestamp"]))-1*60*60)
+  data[data$ID=="RMCS1952" & substr(data$RunTimestamp,6,10)=="03-29",
+       "RunTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="RMCS1952" & substr(data$RunTimestamp,6,10)=="03-29",
+                                                                    "RunTimestamp"]))-1*60*60)
+  data[data$ID=="RMCS1952" & substr(data$SubmissionTimestamp,6,10)=="03-29",
+       "SubmissionTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="RMCS1952" &
+                                                                             substr(data$SubmissionTimestamp,6,10)=="03-29",
+                                                                    "SubmissionTimestamp"]))-1*60*60)
+  
+  
+  # 2.2. Different time zones
+  # ..................................................................
+  # aaaaaa89's timestamps are one hour shifted (working abroad ?)
+  data[data$ID=="aaaaaa89",
+       "RunTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="aaaaaa89",
+                                                                    "RunTimestamp"]))-1*60*60)
+  data[data$ID=="aaaaaa89",
+       "SubmissionTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="aaaaaa89",
+                                                                           "SubmissionTimestamp"]))-1*60*60)
+  # MMCP1956's timestamps are one hour shifted (working abroad ?)
+  data[data$ID=="MMCP1956",
+       "RunTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="MMCP1956",
+                                                                    "RunTimestamp"]))-1*60*60)
+  data[data$ID=="MMCP1956",
+       "SubmissionTimestamp"] <- as.character(as.POSIXct(as.character(data[data$ID=="MMCP1956",
+                                                                           "SubmissionTimestamp"]))-1*60*60)
+  
+  cat("*RECODING TIME DATA*",
+      "\n\nOriginal Sample size = ",N2.original," participants (",N1.original," surveys).",
+      "\n\nExcluding ",N1.doubleSurvey," surveys due to repeated surveys.",
+      "\nExcluding ",N1.doubleProtocol," surveys  due to repeated protocol, of which: \n- ",
+      N1.doubleProtocol.tech," surveys  due to technical problems, \n- ",
+      N1.doubleProtocol.few," surveys due to too few responses on the first time,\n- ",
+      N1.doubleProtocol.their," surveys repeated on their initiative.",
+      "\nRecoding ",N2.doubleProtocol," participants.",
+      "\n\nCurrent Sample size = ",nlevels(as.factor(data$ID))," participants (",nrow(data)," surveys).",sep="")
+  
+    return(data)}
+```
+</p>
+</details>
+```{r message=FALSE}
+# processing data
+ESMdata <- time.AND.double(ESMdata)
+
+# sanity check (2032, 176)
+cat(nrow(ESMdata),"observervations from",nlevels(as.factor(as.character(ESMdata$ID))),"participants")
+```
+
+<br>
+
+In ESM surveys, the variable `within.day` is currently counting surveys as they where received (1°, 2°, 3°, etc.), and not as they were scheduled, based on the `RunTimestamp` variable. To recode `within.day`, the `within.day.adjust()` function is used accounting for both the scheduled temporal window and the 20-min interval between the survey notification (beep) and its expiration.
+
+- 1 = 9:15 - 10:15 + 20 min (up to 10:35), 'baseline' survey (`SurveyType` = "baseline")
+
+- 2 = 10:20 - 10:40 + 20 min (up to 11:00), 'work' survey (`SurveyType` = "work")
+
+- 3 = 11:50 - 12:10 + 20 min (up to 12:30)
+
+- 4 = 13:20 - 13:40 + 20 min (up to 14:00)
+
+- 5 = 14:50 - 15:10 + 20 min (up to 15:30)
+
+- 6 = 16:20 - 16:40 + 20 min (up to 17:00)
+
+- 7 = 17:50 - 18:10 + 20 min (up to 18:30)
+
+Moreover, to account for the variability between devices, **20 extra minutes** are subtracted and added to the lower and the higher limit of each window, respectively.
+
+Finally, the variable `day.of.week` (currently indexing the day of the week such that Monday = 1, Tuesday = 2, etc.) is recoded to the variable `day`, indexing the day of the protocol (i.e., Day 1, Day 2, Day 3).
+
+<details><summary>show `within.day.adjust()`</summary>
+<p>
+```{r }
+within.day.adjust <- function(data){ require(birk)
+
+  # recoding ScriptName as SurveyType
+  colnames(data)[which(colnames(data)=="ScriptName")] <- "SurveyType"
+  data$SurveyType <- gsub("Survey Lavoro","work",data$SurveyType)
+  data$SurveyType <- as.factor(gsub("Survey Mattina","baseline",data$SurveyType))
+    
+  # time as POSIXct
+  data$RunTimestamp <- as.POSIXct(as.character(data$RunTimestamp))
+  data$SubmissionTimestamp <- as.POSIXct(as.character(data$SubmissionTimestamp))
+  
+  # converting within.day
+  for(i in 1:nrow(data)){
+    
+    # survey 1 between 9:15 (- 10 min error) and 10:15 (up to 10:35), marked as SurveyType = "baseline"
+    if(data[i,"SurveyType"]=="baseline"){ data[i,"within.day"] = 1 } else {
+      
+      # survey 2 = 10:20 (- 10min error) up to 11:00 (+ 20min error)
+      if(strftime(data[i,"RunTimestamp",],
+                  format="%H:%M:%S")<strftime("1970-01-01 11:20:00",format="%H:%M:%S")){
+        data[i,"within.day"] = 2 }
+      
+      # survey 3 = 11:50 (- 10min error) up to 12:30 (+ 20min error)
+      else if(strftime(data[i,"RunTimestamp",],
+                       format="%H:%M:%S")>strftime("1970-01-01 11:30:00",
+                                                   format="%H:%M:%S") & strftime(data[i,"RunTimestamp",],
+                                                                                 format="%H:%M:%S")<strftime("1970-01-01 12:50:00",
+                                                                                                             format="%H:%M:%S")){
+        data[i,"within.day"] = 3} 
+      
+      # survey 4 = 13:20 (- 10min error) up to 14:00 (+ 20min error)
+      else if(strftime(data[i,"RunTimestamp",],
+                       format="%H:%M:%S")>strftime("1970-01-01 13:00:00",
+                                                   format="%H:%M:%S") & strftime(data[i,"RunTimestamp",],
+                                                                                 format="%H:%M:%S")<strftime("1970-01-01 14:20:00",
+                                                                                                             format="%H:%M:%S")){
+        data[i,"within.day"] = 4} 
+      
+      # survey 5 = 14:50 (- 10min error) up to 15:30 (+ 20min error)
+      else if(strftime(data[i,"RunTimestamp",],
+                       format="%H:%M:%S")>strftime("1970-01-01 14:30:00",
+                                                   format="%H:%M:%S") & strftime(data[i,"RunTimestamp",],
+                                                                                 format="%H:%M:%S")<strftime("1970-01-01 15:50:00",
+                                                                                                             format="%H:%M:%S")){
+        data[i,"within.day"] = 5} 
+      
+      # survey 6 = 16:20 (- 10min error) up to 17:00 (+ 10min error)
+      else if(strftime(data[i,"RunTimestamp",],
+                       format="%H:%M:%S")>strftime("1970-01-01 16:00:00",
+                                                   format="%H:%M:%S") & strftime(data[i,"RunTimestamp",],
+                                                                                 format="%H:%M:%S")<strftime("1970-01-01 17:20:00",
+                                                                                                             format="%H:%M:%S")){
+        data[i,"within.day"] = 6}
+      
+      # survey 7 =  > 17:50
+      else if(strftime(data[i,"RunTimestamp",],
+                       format="%H:%M:%S")>strftime("1970-01-01 17:30:00",
+                                                   format="%H:%M:%S")){ data[i,"within.day"] = 7
+                                                   } else { data[i,"within.day"] = NA }}}
+  
+  # sanity check
+  miss <- nrow(data[is.na(data$within.day),]) # 9 cases
+  cat("Adjusting ",miss,"cases with RunTimestamp out of scheduled range")
+  times <- data.frame(within.day=2:7,timestamps=c("1970-01-01 10:30:00","1970-01-01 12:00:00","1970-01-01 13:30:00",
+                                                  "1970-01-01 15:00:00","1970-01-01 16:30:00","1970-01-01 18:00:00"))
+  times$timestamps <- as.POSIXct(as.character(times$timestamps))
+  for(i in 1:nrow(data)){ if(is.na(data[i,"within.day"])){
+    data[i,"within.day"] <- times[which.closest(as.numeric(times$timestamps), 
+                                                as.numeric(as.POSIXct(paste("1970-01-01",
+                                                                            substr(as.character(data[i,"RunTimestamp"]),
+                                                                                   12,19))))),"within.day"] }}
+
+  # creating day variable
+  data <- data[order(data$ID,data$RunTimestamp),]
+  data$day <- 1
+  for(i in 2:nrow(data)){ if(data[i,"ID"] != data[i-1,"ID"]){ data[i,"day"] <- 1 }
+    else if(data[i,"ID"] == data[i-1,"ID"] & data[i,"day.of.week"] != data[i-1,"day.of.week"]){
+      data[i,"day"] <- data[i-1,"day"] + 1}else{ data[i,"day"] <- data[i-1,"day"] }}
+  rownames(data) <- 1:nrow(data)
+  data <- data[order(data$ID,data$day,data$within.day),]
+  
+  return(data[,c("ID","gender","os","day","day.of.week","within.day","SurveyType",
+                 colnames(data)[7:(ncol(data)-1)])])}
+```
+</p>
+</details>
+```{r message=FALSE}
+# processing data
+ESMdata <- within.day.adjust(ESMdata)
+
+# sanity check (2,032, 176)
+cat(nrow(ESMdata),"observervations from",nlevels(as.factor(as.character(ESMdata$ID))),"participants")
+```
+
+<br>
+
+*Comments:*
+
+- In 9 cases, the variable `within.day` could not be correctly encoded due to `RunTimestamp` value out of scheduled ranges. In these cases, the value of `within.day` was assigned based on which scheduled survey's timestamp was the closest to the `RunTimestamp.`
+
+- Such cases are likely to be due to **specific smartphone time settings** (as we already corrected for daylight time and time zones). For instance, in 5 cases `RunTimestamp` is > 18:50
+```{r }
+ESMdata[strftime(ESMdata[,"RunTimestamp",],format="%H:%M:%S")>strftime("1970-01-01 18:50:00",format="%H:%M:%S"),
+        c(1,3:8)]
+```
+
+<br>
+
+As a last control, we check again for **double surveys** (i.e., surveys that were sent twice due to a malfunction of the mobile app) and double protocols (i.e., when `day` > 3). In these cases, **only the first survey is retained** (the second one is removed). **14 surveys** are removed.
+```{r }
+n = 0
+new.data <- ESMdata[1,]
+for(i in 2:nrow(ESMdata)){ # checking double responses (same ID, day and within.day)
+  if(ESMdata[i,"ID"] == ESMdata[i-1,"ID"] & ESMdata[i,"day"] == ESMdata[i-1,"day",] &
+     ESMdata[i,"within.day"] == ESMdata[i-1,"within.day"]){ 
+    n <- n + 1
+    cat("\n",as.character(ESMdata[i,"ID"]),ESMdata[i,"day"],ESMdata[i,"within.day"],
+        as.character(ESMdata[i-1,"RunTimestamp"]),as.character(ESMdata[i,"RunTimestamp"]))
+  }else{ new.data <- rbind(new.data,ESMdata[i,])}}
+cat("Excluding",n,"double responses") # number of double responses (14)
+ESMdata <- new.data # excluding double responses
+
+# sanity check
+n = 0
+for(i in 2:nrow(ESMdata)){ if(ESMdata[i,"ID"] == ESMdata[i-1,"ID"] & ESMdata[i,"day"] == ESMdata[i-1,"day",] &
+                              ESMdata[i,"within.day"] == ESMdata[i-1,"within.day"]){ n <- n + 1 }}
+cat(n,"double responses") # no more double responses (OK)
+
+# printing and excluding double protocols
+cat("Excluding",nrow(ESMdata[as.numeric(ESMdata$day)>3,]),"cases of double protocols") # double protocols (25)
+ESMdata <- ESMdata[as.numeric(ESMdata$day)<4,] # excluding double protocols
+
+# sanity check (1,993, 176)
+ESMdata$ID <- as.factor(as.character(ESMdata$ID)) # updating ID values
+cat(nrow(ESMdata),"observervations from",nlevels(as.factor(as.character(ESMdata$ID))),"participants")
+```
+
+<br>
+
+*Comments:*
+
+- 199 surveys (9.08%) were excluded due to double responses or repeated protocol (i.e., due to technical problems, or failure to stop the mobile application, some participants repeated one or more protocol days)
+
+- The recoded dataset includes **1,993 responses from 176 participants**
+
+<br>
+
+### 2.1.3. Missing responses
+
+Then, we take a look at the number of **missing responses in each item**.  Indeed, a number of surveys was incomplete due to **technical problems with the app**.
+```{r message=FALSE,warning=FALSE}
+library(dplyr); library(tidyr)
+missing.all <- ESMdata %>% 
+  select(v1:f3) %>%
+  gather("Variable", "value") %>% 
+  group_by(Variable) %>%
+  summarise(Missing=length(which(is.na(value))),
+            '% Missing'=round(100*length(which(is.na(value)))/n(),2))
+missing.work <- ESMdata[ESMdata$SurveyType=="work",] %>% 
+  select(WHAT:c3) %>%
+  gather("Variable", "value") %>% 
+  group_by(Variable) %>%
+  summarise(Missing=length(which(is.na(value))),
+            '% Missing'=round(100*length(which(is.na(value)))/n(),2))
+detach("package:dplyr", unload=TRUE);detach("package:tidyr", unload=TRUE)
+missing <- rbind(as.data.frame(missing.all),as.data.frame(missing.work))
+missing$Variable <- factor(missing$Variable,
+                           levels=colnames(ESMdata)[which(colnames(ESMdata)=="v1"):which(colnames(ESMdata)=="c3")])
+(missing <- missing[order(missing$Variable),]) # sorting by item order
+```
+
+<br>
+
+*Comments:*
+
+- We can notice that missing responses mainly concern the **last items** of work surveys, with Situational Stressors items (d1, d2, d3, d4, and especially c1, c2, and c3) showing 17 to 64 missing data (0.99 - 3.74%)
+
+- In contrast, missing data are **< 1%** for most items measuring Mood and Work Sampling variables
+
+- Here, we remove further **14 surveys (0.69%)** due to **missing data in almost all items** (i.e., those data entries with missing data in the first items)
+```{r message=FALSE,warning=FALSE}
+n <- nrow(ESMdata)
+ESMdata <- ESMdata[!(is.na(ESMdata$v2)&is.na(ESMdata$v3)),]
+cat(n - nrow(ESMdata),"removed surveys due to incomplete responses") # removed surveys (14)
+
+library(dplyr); library(tidyr)
+missing.all <- ESMdata %>% 
+  select(v1:f3) %>%
+  gather("Variable", "value") %>% 
+  group_by(Variable) %>%
+  summarise(Missing=length(which(is.na(value))),
+            '% Missing'=round(100*length(which(is.na(value)))/n(),2))
+missing.work <- ESMdata[ESMdata$SurveyType=="work",] %>% 
+  select(WHAT:c3) %>%
+  gather("Variable", "value") %>% 
+  group_by(Variable) %>%
+  summarise(Missing=length(which(is.na(value))),
+            '% Missing'=round(100*length(which(is.na(value)))/n(),2))
+detach("package:dplyr", unload=TRUE);detach("package:tidyr", unload=TRUE)
+missing <- rbind(as.data.frame(missing.all),as.data.frame(missing.work))
+missing$Variable <- factor(missing$Variable,
+                           levels=colnames(ESMdata)[which(colnames(ESMdata)=="v1"):which(colnames(ESMdata)=="c3")])
+(missing <- missing[order(missing$Variable),]) # sorting by item order
+
+# sanity check (1979, 175)
+ESMdata$ID <- as.factor(as.character(ESMdata$ID)) # updating ID values
+cat(nrow(ESMdata),"observervations from",nlevels(as.factor(as.character(ESMdata$ID))),"participants")
+```
+
+<br>
+
+*Comments:*
+
+- As noted above, missing responses mainly concern the **last items** of work surveys, with Situational Stressors items (d1, d2, d3, d4, and especially c1, c2, and c3) showing 8 to 54 missing data (0.47 - 3.18%)
+
+- In contrast, missing data are **< 0.3%** for most items measuring Mood and Work Sampling variables
+
+- The recoded dataset includes **1,979 responses from 175 participants**
+
+<br>
+
+### 2.1.4. Response times
+
+Finally, we check the time required to fill the ESM questionnaires based on timestamps of running and submitting.
+```{r }
+time2submit <- difftime(ESMdata$SubmissionTimestamp,ESMdata$RunTimestamp)
+length(time2submit[time2submit>900])
+time2submit <- time2submit[time2submit<900] # excluding from comuptation 216 extreme cases (11%) taking more than 15 min
+mean(as.numeric(time2submit))/60; sd(time2submit)/60
+hist(as.numeric(time2submit)/60,breaks=20,main="Time to submit ESM Questionnaire",xlab="Response time (min)")
+```
+
+<br>
+
+*Comments:*
+
+- in a number of cases (N = 216), participants took more than 15min to fill the questionnaire, probably because they were doing something else and interrupted the data entry
+
+- if we don't consider those participants, the average time to fill the questionnaire was about **4 min (SD = 3.60 min)**, with most participants responding in 2 min or less
+
+<br>
+
+## 2.2. RETROdata
+
+Here, we recode `RETROdata`. 
+
+### 2.2.1. Variable recoding
+
+We start by selecting and renaming data columns.
+```{r }
+# removing unuseful columns
+RETROdata[,c("X.","grazie","Network.ID")] <- NULL
+  
+# renaming columns
+colnames(RETROdata) <- c("gender","age","job",
+                         "position", # not used in this work
+                         "job.sector",
+                         "instr",paste("home",1:5,sep=""), # not used in this work
+                         "work.hours",
+                         paste("phone",1:6,sep=""), # not used in this work
+                         paste("JAWS",1:12,sep=""),
+                         paste("CBI",1:7,sep=""),
+                         paste("PSI",1:18,sep=""), # not used in this work
+                         paste("PSIm",1:18,sep=""), # not used in this work
+                         paste("d",1:5,sep=""),
+                         paste("OCS",1:6,sep=""), # not used in this work
+                         paste("c",1:5,sep=""),
+                         paste("DWAS",1:10,sep=""), # not used in this work
+                         "ID","OS","START","SUBMIT")
+
+# selecting considered variables
+RETROdata <- 
+  RETROdata[,c("ID","OS","START","SUBMIT","gender","age","job","job.sector","work.hours", # participant info & demos
+               paste("JAWS",1:12,sep=""),paste("CBI",1:7,sep=""), # job strain (job-related aff. wellb. & burnout)
+               paste("d",1:5,sep=""),paste("c",1:5,sep=""))] # job stressors (demand & control)
+```
+
+
+<br>
+
+Then, we recode all categorical variables.
+```{r }
+# OS (iOS, Android, other)
+RETROdata[RETROdata$ID=="Clmr1958" | RETROdata$ID=="ATLG1958" | RETROdata$ID=="DVMC1950" | 
+          RETROdata$ID=="PRIZZY88", "OS"] <- levels(as.factor(RETROdata$OS))[3] # filling empty values based on ESMdata
+RETROdata[RETROdata$ID=="SBAT1949", "OS"] <- levels(as.factor(RETROdata$OS))[4]
+RETROdata$OS <- as.factor(gsub("Con sistema ANDROID Samsung, HUAWEI, ASUS, Xiaomi ecc.","Android", # recoding levels
+                               gsub("Con sistema iOS iPhone","iOS",
+                                    gsub("Altro es. Microsoft phone -&gt; VEDERE NOTA","other",
+                                         gsub("[()]","",RETROdata$OS)))))
+
+# gender (F, M)
+RETROdata$gender <- as.factor(substr(RETROdata$gender,1,1))
+
+# job sector (Private, Public)
+RETROdata$job.sector <- as.factor(gsub("Privato","Private",gsub("Pubblico","Public",RETROdata$job.sector)))
+
+# categorical variables as factor
+RETROdata[,c("ID","OS","gender","job.sector")] <- lapply(RETROdata[,c("ID","OS","gender","job.sector")],as.factor)
+```
+
+<br>
+
+### 2.2.2. Compliance information
+
+Second, we use the `RETRO.compl` function to add information on participants' **compliance** (encoded in the `"Compliance.csv"` file), to remove **double responses**, and to recode wrongly encoded participants' `ID` values.
+
+<details><summary>**Show RETRO.compl**</summary>
+<p>
+```{r }
+RETRO.compl <- function(data,compliance){ require(plyr)
+  
+  # ID recoding
+  cat("Excluding 2 pilot responses") # removing pilot responses
+  data <- data[!(data$ID=="Prova_ValentinaRossi"),] 
+  data <- data[!(data$ID=="provaBianca"),]
+  data$ID <- gsub("Magg1948","MAGG1948",data$ID) # incorrectly encoded IDs
+  data$ID <- gsub("05101985","5101985",data$ID)
+  data[!is.na(data$ID)&data$ID=="ANMA1938"&data$job=="Psicologa","ID"] <- "ANIMA1938"
+  data[!is.na(data$ID)&data$ID=="MCVD1959"&as.character(data$START)=="2019-05-21 16:12:01","ID"] <- "MCVD19592"
+  data[!is.na(data$ID)&data$ID=="mrlv1950","ID"] <- "mrlv19502"
+  data$ID <- gsub(" ","",data$ID)
+  data$ID <- gsub("Ciao","",data$ID)
+  cat("\n\nRecoding 2 participant with identical ID (siblings?)") # siblings
+  data[!is.na(data$ID) & data$ID=="LFAI1940"&data$gender=="M","ID"] <- "LFAI19402" 
+  
+  # merging with compliance.file
+  compliance$ID <- gsub("mag-48","MAGG1948",compliance$CODICE) # fixing incorrect ID
+  data <- plyr::join(data,compliance,type="full",by="ID")
+  data <- data[order(data$ID),]
+  rownames(data) <- 1:(nrow(data))
+  
+  # fixing respRate variable
+  data$respRate <- NA
+  data[,c("X1survey","X1day","X3days")] <- lapply(data[,c("X1survey","X1day","X3days")],as.character)
+  for(i in 1:nrow(data)){
+    if(is.na(data[i,"X1survey"]) | (!is.na(data[i,"X1survey"]) & data[i,"X1survey"] == "")){ data[i,"X1survey"] <- 0 
+    } else { data[i,"X1survey"] <- 1 }
+    if(is.na(data[i,"X1day"]) | (!is.na(data[i,"X1day"]) & data[i,"X1day"] == "")){ data[i,"X1day"] <- 0 
+    } else { data[i,"X1day"] <- 1 }
+    if(is.na(data[i,"X3days"]) | (!is.na(data[i,"X3days"]) & data[i,"X3days"] == "")){ data[i,"X3days"] <- 0 
+    } else { data[i,"X3days"] <- 1 }
+    if(is.na(data[i,"noQs"]) | (!is.na(data[i,"noQs"]) & data[i,"noQs"] == "")){ data[i,"noQs"] <- 0 }
+    data[i,"respRate"] <- sum(as.numeric(data[i,c("X1survey","X1day","X3days")]))}
+  # data[,c("ID","respRate","X1survey","X1day","X3days")] # sanity check
+  data$X1day <- data$X1survey <- data$X3days <- data$N <- data$CODICE <- NULL # removing unuseful varibles
+  data$respRate <- as.factor(data$respRate)
+  
+  # excluding 3 participants with no responses to both questionnaires
+  cat("\n\nExcluding 3 participant with no responses to both questionnaires") # siblings
+  data <- data[!(data$noQs==1&data$respRate==0),]
+  
+  # printing compliance information
+  cat("\n\nTotal No. of participants = ",nrow(data),", of which:\n - ",
+      nrow(data[data$noQs==0&as.numeric(data$respRate)>0,])," (",
+      round(100*nrow(data[data$noQs==0&as.numeric(data$respRate)>0,])/nrow(data),2),
+      "%) responded to BOTH RETROdata & at least 1 ESMdata\n - ",
+      nrow(data[data$noQs==0&data$respRate==0,])," (",
+      round(100*nrow(data[data$noQs==0&data$respRate==0,])/nrow(data),2),
+      "%) responded to RETROdata BUT NOT to any ESMdata\n - ",
+      nrow(data[data$noQs==1&as.numeric(data$respRate)>0,])," (",
+      round(100*nrow(data[data$noQs==1&as.numeric(data$respRate)>0,])/nrow(data),2),
+      "%) responded to at least 1 ESMdata BUT NOT to RETROdata\n\nAmong the first ",
+      nrow(data[data$noQs==0&as.numeric(data$respRate)>0,])," participants:\n- ",
+      nrow(data[data$noQs==0&as.numeric(data$respRate)>1,])," (",
+      round(100*nrow(data[data$noQs==0&as.numeric(data$respRate)>1,])/nrow(data),2),
+      "%) responded to BOTH RETROdata & at least 1 ESMdata per day\n- ",
+      nrow(data[data$noQs==0&data$respRate==3,])," (",
+      round(100*nrow(data[data$noQs==0&data$respRate==3,])/nrow(data),2),
+      "%) responded to BOTH RETROdata & at least 3 ESMdata per day\n\n",
+      sep="")
+  
+  # updating ID levels
+  data$ID <- as.factor(as.character(data$ID))
+  
+  return(data[,c("ID","gender","age","OS","respRate","noQs","START","SUBMIT",
+                 colnames(data)[7:(ncol(data)-2)])])}
+```
+</p>
+</details>
+```{r message=FALSE}
+# processing data
+RETROdata <- RETRO.compl(RETROdata,compliance=read.csv2("S5_Compliance.csv"))
+RETROdata$noQs.1 <- NULL # double column
+
+# sanity check (211, 211)
+cat(nrow(RETROdata),"observations from",nlevels(RETROdata$ID),"participants")
+```
+
+<br>
+
+*Comments:*
+
+- Among **215** recruited participants, **three** did not respond to both the preliminary questionnaire and any of the scheduled ESM questionnaires, and were **excluded**
+
+- Moreover, one participant was encoded twice with a wrong `ID`
+
+- The resulting sample is composed by **211 participants**
+
+<br>
+
+### 2.2.3. Recoding jobs
+
+Here, the `job.recode()` function is used to recode the open-ended `job` item responses by using the **ISCO-08 classification of occupations (level 2)** ([Ganzeboom, 2010](#ref)). 
+
+<details><summary>show `job.recode()`</summary>
+<p>
+```{r }
+job.recode <- function(data){ require(labourR); require(data.table); require(magrittr)
+
+  # creating corpus data
+  corpus <- data.table(id=data$ID,text=data$job,language="it")
+  corpus$text <- gsub(" presso la segreteria didattica del Dipartimento di Psicologia Generale","", # remove sensitive info
+                      gsub("POSTE ITALIANE","",gsub("CMP di FIUMICINO","",corpus$text)))
+  languages <- unique(corpus$language) # language classes
+  
+  # first screening based on the labourR::classify_occupation() function
+  suggestions <- lapply(languages, function(lang) {
+    classify_occupation(corpus=corpus[corpus$language==lang],lang=lang,isco_level=2,num_leaves=10)
+    }) %>% rbindlist
+  corpus <- plyr::join(corpus,suggestions,by="id",type="left")
+  
+  # adjusting automatic classification based on manual screening
+  corpus[corpus$text%in%c("impiegato pubblico","Impiegato","impiegato","impiegata","Impiegata","Impiegato ","IMPIEGATA",
+                          "Impiegata ","Impiegata d’ufficio, receptionist ","Impiegato tecnico","Segretaria d'azienda ",
+                          "Impiegata presso  con mansioni operative al ","impegato","Impiegatizio"),"preferredLabel"] <- 
+    "General and keyboard clerks"
+  corpus[corpus$text%in%c("SERVIZI","customer care back office",
+                          "lavori di segreteria, archiviazioni pratica, ricevimento clienti  etc\\."),"preferredLabel"] <- 
+    "Customer services clerks"
+  
+  corpus[grep("assegnista",tolower(corpus$text)),"preferredLabel"] <- 
+    "Science and engineering professionals"
+  corpus[corpus$text%in%c("Docente universitario","Data scientist","Assegno di ricerca ","assistente ricercatore",
+                          "Postdoc ","Professore Associato - Università di Padova","Ricercatore, Docente, Psicoterapeuta",
+                          "Professore universitario","Ricerca accademica","Prof ass dpss","Docente Universitario",
+                          "Ricercatore universitario RTDA","Assegno di ricerca",
+                          "Post doc in laboratorio di microbiologia","docente universitario"),"preferredLabel"] <- 
+    "Science and engineering professionals"
+  corpus[corpus$text%in%c("Programmatore"),"preferredLabel"] <- 
+    "Information and communications technology professionals"
+  corpus[corpus$text%in%c("Responsabile comunicazione digitale/press","Addetto alla formazione",
+                          "Commerciale in un'azienda in campo energetico","Tax advisor","Digital Marketer",
+                          "Responsabile di selezione del personale in agenzia per il lavoro","HR SPECIALIST",
+                          "Ufficio Risorse Umane","Recruiter",
+                          "Responsabile contatti in una società di logistica","Digital Marketer freelance e Youth Worker",
+                          "Impiegata e operatore del mercato del lavoro, gestisco e metto in atto azioni di orientamento professionale per disoccupati","Consulente di orientamento professionale","Addetta alla selezione del personale",
+                          "Progettazione spazi adibiti a retail e visual merchandising strategico",
+                          "grafica pubblicitaria","Responsabile comunicazione digitale e grafica",
+                          "Graphic Designer","commercialista"),"preferredLabel"] <- 
+    "Business and administration professionals"
+  corpus[corpus$text%in%c("impiegato amministrativo","Lavoro d’ufficio in Banca","Contabile ammintrativo",
+                          "Impiegata amministrativa presso Rai","Impiegata settore fiscale",
+                          "Impiegato Amministrativo ","Impiegato Amministrativo",
+                          "Impiegato digital marketing","assistente commerciale - customer service",
+                          "Lavoro impiegatizio presso la pubblica amministrazione",
+                          "lavoro impiegatizio di carattere commerciale, lavoro su progetto",
+                          "Sono impiegata amministrativa nella segreteria di un Istituto di riabilitazione",
+                          "impiegato amministrativo-contabile "),
+         "preferredLabel"] <- 
+    "Business and administration associate professionals"
+  corpus[corpus$text%in%c("attività operativa di cantiere"),"preferredLabel"] <- 
+    "Building and related trades workers, excluding electricians"
+  corpus[corpus$text%in%c("attività editoriale","Coordinatrice Culturale",
+                          "Archivista. Attività di censimento documentazione enti pubblici. Coordinamento altri operatori"),"preferredLabel"] <- 
+    "Legal, social, cultural and related associate professionals"
+  corpus[corpus$text%in%c("Praticante in uno studio legale, tirocinante in un ufficio giudiziario"),"preferredLabel"] <- 
+    "Legal, social, cultural and related associate professionals"
+  corpus[corpus$text%in%c("Responsabile di selezione del personale in agenzia per il lavoro",
+                          "Risorse umane","responsabile"),"preferredLabel"] <- 
+    "Administrative and commercial managers"
+  corpus[corpus$text%in%c("psicologo","Psicologa","Assistente disabili",
+                          "Supporto alla didattica, Psicologo",
+                          "Maestro di laboratorio presso un'istituzione psico-pedagogico"),"preferredLabel"] <- 
+    "Social and religious professionals"
+  corpus[corpus$text%in%c("direzione","Direttore Generale","Dirigente"),"preferredLabel"] <- 
+    "Chief executives, senior officials and legislators"
+  corpus[corpus$text%in%c("impiegato, coordinatore  preparazione logistico spedizione macchine per imballo",
+                          "manager di un team di 8 persone che si occupa della gestione di dati del sottosuolo per l'industria petrolifera"),"preferredLabel"] <-  
+    "Production and specialised services managers"
+  corpus[corpus$text%in%c("Coordinatore Terapisti","Operatore socio sanitario","Infermiere\n",
+                          "Coordinatore  infermieristico"),"preferredLabel"] <-  
+    "Health professionals"	
+  corpus[corpus$text%in%c("Maestro di laboratorio ",
+                          "Maestro di laboratorio presso un'istituzione psico-pedagogico"),"preferredLabel"] <-  
+    "Teaching professionals"
+  
+  # merging corpus with data
+  corpus$ID <- as.factor(corpus$id)
+  data <- plyr::join(data,corpus[,c("ID","preferredLabel")],by="ID",type="left")
+  
+  # marking excluded jobs as jobOut = TRUE
+  data$jobOut <- FALSE
+  data[data$job%in%c("attività operativa di cantiere","Maestro di laboratorio ","Infermiere professionale\n",
+                     "CUSTOMER SERVICE","Assistente disabili","Operatore socio sanitario",
+                     "Infermiere\n","Fotografo\nFarmacista"),"jobOut"] <- TRUE
+  
+  # replacing original job with recoded job categories
+  data$job <- as.factor(data$preferredLabel)
+  data$preferredLabel <- NULL # removing preferredLabel
+  
+  # summarizing info
+  cat("Recoded job variable into",nlevels(data$job),"categories:\n")
+  print(summary(data[!is.na(data$job),"job"]))
+  cat("\n\n",nrow(data[data$jobOut==TRUE,]),"cases marked as jobOut (incompatible jobs)")
+  return(data) }
+```
+</p>
+</details>
+```{r message=FALSE,warning=FALSE}
+RETROdata <- job.recode(RETROdata)
+
+# sanity check (211, 211)
+cat(nrow(RETROdata),"observations from",nlevels(RETROdata$ID),"participants")
+```
+
+<br>
+
+### 2.2.4. Response times
+
+Finally, we check the time required to fill the preliminary questionnaire based on time stamp variables.
+```{r message=FALSE,warning=FALSE}
+# START and SUBMIT as POSIXct
+RETROdata$START <- as.POSIXct(as.character(RETROdata$START))
+RETROdata$SUBMIT <- as.POSIXct(as.character(RETROdata$SUBMIT))
+
+# conmputing response times (minutes)
+time2submit <- difftime(RETROdata$SUBMIT,RETROdata$START,units="mins")
+time2submit[!is.na(time2submit)&time2submit>40] # extreme cases
+time2submit <- time2submit[!is.na(time2submit)&time2submit<40] # excluding 22 extreme cases from the computation
+mean(time2submit); sd(time2submit)
+hist(as.numeric(time2submit),breaks=20,main="Time to submit Preliminary Questionnaire",xlab="Response time (min)")
+```
+
+<br>
+
+*Comments:*
+
+- a number of participants (N = 22) took more than 40 min to fill the questionnaire, probably because they were doing something else and interrupted the administration
+
+- after the exclusion of those participants, the average time to fill the questionnaire was 17.62 min (SD = 7.70 min), with most participants responding in 15 min or less
+
+<br>
+
+# 3. Data merging
+
+Here, we merge the ESMdata and RETROdata datasets to be used for data analysis.
+
+First, we use the `IDrecode()` function to recode wrongly indicated `ID` values in the `ESMdata` (i.e., most but not all characters corresponded between `ESMdata` and `RETROdata`).
+
+<details><summary>**show IDrecode**</summary>
+<p>
+```{r }
+IDrecode <- function(data){
+  # correcting wrongly reported IDs
+  data$ID <- gsub("05101985","5101985",data$ID)
+  data$ID <- gsub("ACLS1955 ","ACLS1955",data$ID)
+  data$ID <- gsub("BAFC1922 ","BAFC1922",data$ID)
+  data$ID <- gsub("Adfcr49","ADFCR1949",data$ID)
+  data$ID <- gsub("Asst42","ASST1945",data$ID)
+  data$ID <- gsub("LBMM1958","BLMM1958",data$ID)
+  data$ID <- gsub("CRG16","CGT16",data$ID)
+  data$ID <- gsub("SGAMOR51","CSAM1951",data$ID)
+  data$ID <- gsub("ZFBR50","FZBR50",data$ID)
+  data$ID <- gsub("GBPR1944","GBRP1944",data$ID)
+  data$ID <- gsub("LCPP1945","LCPP1944",data$ID)
+  data$ID <- gsub("LFMI1965","LFMDI1965",data$ID)
+  data$ID <- gsub("MGRB1964","MRLV19502",data$ID)
+  data$ID <- gsub("Ugiila17L","UCGZ1956",data$ID)
+  data$ID <- gsub("Andrea89","VTGF1966",data$ID)
+  data$ID <- gsub("LFPT1955","LFPT54",data$ID)
+  data$ID <- gsub("GNCP1974","GMCP74",data$ID)
+  data$ID <- gsub("PCAN1953","PCAN1935",data$ID)
+  data$ID <- gsub("PPCG1961","PPGC1961",data$ID)
+  return(data) }
+```
+</p>
+</details>
+```{r }
+ESMdata <- IDrecode(ESMdata)
+```
+
+<br>
+
+Then, we check for differences in terms of participants' ID between the two datasets, and we rename variables with the same label.
+```{r }
+# checking differences
+RETROid <- toupper(levels(as.factor(as.character(RETROdata[RETROdata$respRate!=0,
+                                                           "ID"])))) # selecting those that responded to 1+ ESM form
+ESMid <- toupper(levels(as.factor(as.character(ESMdata$ID)))) # selectng everybody
+for(i in 1:length(RETROid)){ if(RETROid[i] %in% ESMid) next
+  else print(RETROid[i])} # showing cases with RETROdata but not ESMdata ID (0)
+for(i in 1:length(ESMid)){ if(ESMid[i] %in% RETROid) next
+  else print(ESMid[i])} # showing cases with ESM but not RETROdata ID (0)
+
+# renaming variables
+colnames(RETROdata)[which(colnames(RETROdata)=="gender")] <- "gender.RETRO" # changing label for sanity check
+
+# IDs in capital letters
+RETROdata$ID <- as.factor(toupper(RETROdata$ID)) # only those who answered to at least 1
+ESMdata$ID <- as.factor(toupper(ESMdata$ID))
+```
+
+<br>
+
+Finally, we can merge the two datasets.
+```{r }
+# merging
+ESMdata <- plyr::join(ESMdata,RETROdata[,c(1:which(colnames(RETROdata)=="work.hours"),ncol(RETROdata))],by="ID",type="full")
+
+# sanity check (different gender between prelQS and ESM)
+levels(as.factor(as.character(ESMdata[!is.na(ESMdata$gender)&
+                                        !is.na(ESMdata$gender.RETRO)&ESMdata$gender!=ESMdata$gender.RETRO,"ID"]))) # 2 cases
+# sanity check (different OS between prelQS and ESM)
+levels(as.factor(as.character(ESMdata[!is.na(ESMdata$os)&!is.na(ESMdata$OS)&
+                                    as.character(ESMdata$os)!=as.character(ESMdata$OS),c("ID")]))) # 2 cases
+ESMdata$gender <- ESMdata$gender.RETRO # keeping only RETRO gender
+ESMdata$gender.RETRO <- NULL
+colnames(RETROdata)[2] <- "gender"
+ESMdata$OS <- NULL # keeping only ESM os
+```
+
+<br>
+
+*Comments:*
+
+- Now, the `ESMdata` dataset includes the demographic and occupational information collected with the preliminary questionnaire, and the information on participants' compliance. In both cases, the variables assume identical values in each row corresponding to a given participant.
+
+- in only two cases, participants selected the protocol corresponding to a different gender than what they indicated in the preliminary questionnaire (we trust the latter)
+
+- in only two cases, participants reported the wrong OS in the preliminary questionnaire
+
+<br>
+
+# 4. Data anonymization {#anonim}
+
+Although data were collected anonymously, an identification code `ID` was self-created by the participants to link the responses between the preliminary questionnaire and the ESM forms. Since this code was created based on personal information (e.g., mother's year of birth), here we recode `ID` values as `SXXX` so that such information will not be available for future users of our data, in compliance with the GDPR.
+```{r }
+# saving IDs
+IDs <- data.frame(ID=unique(c(levels(ESMdata$ID),levels(RETROdata$ID))))
+
+# creating new fully anonymized values
+IDs$anID <- NA
+for(i in 1:nrow(IDs)){ id <- paste("S",i,sep="") 
+  if(nchar(id)>2){ if(nchar(id)>3){ IDs[i,"anID"] <- id } else { IDs[i,"anID"] <- gsub("S","S0",id) }
+  } else { IDs[i,"anID"] <- gsub("S","S00",id) }}
+IDs$anID <- as.factor(IDs$anID)
+head(IDs$anID) # showing examples 
+
+# replacing ID values with anID values
+ESMdata <- plyr::join(ESMdata,IDs,by="ID",type="left")
+ESMdata$ID <- ESMdata$anID
+RETROdata <- plyr::join(RETROdata,IDs,by="ID",type="left")
+RETROdata$ID <- RETROdata$anID
+ESMdata$anID <- RETROdata$anID <- NULL
+
+# sanity check (2015, 211)
+cat("ESMdata:",nrow(ESMdata),"observations from",nlevels(ESMdata$ID),"participants")
+cat("RETROdata:",nrow(RETROdata),"observations from",nlevels(RETROdata$ID),"participants")
+```
+
+<br>
+
+# 5. Data dictionary
+
+Here, we sort the columns and provide a data dictionary for the processed `ESMdata` and `RETROdata` datasets.
+
+## 5.1. ESMdata
+```{r }
+# selecting and sorting columns
+ESMdata <- ESMdata[,c("ID",colnames(ESMdata)[3:which(colnames(ESMdata)=="SubmissionTimestamp")],
+                      colnames(ESMdata)[which(colnames(ESMdata)=="v1"):which(colnames(ESMdata)=="c3")],# ESM variables
+                      "gender","age","job","jobOut","job.sector","work.hours", # demographic variables
+                      "noQs","respRate")] # response rate info
+
+str(ESMdata)
+```
+
+<br>
+
+**Data structure**
+  
+  - `ID` = participant's anonymized identification code
+
+  - `os` = participant's phone operating system (`iOS` or `Android`)
+
+  - `day` = day of participation (1, 2 or 3)
+
+  - `day.of.week` = weekday (1 = Monday, 3 = Wednesday, 5 = Friday)
+
+  - `within.day` = scheduled questionnaire within day (from 1 to 7)
+
+  - `SurveyType` = type of ESM questionnaire ("baseline" or "work")
+  
+  - `RunTimestamp` and `SubmissionTimestamp` = date and time of ESM questionnaire initiation and submission
+  
+**ESM ratings**
+
+  - `v1` - `f3` = Multidimensional Mood Questionnaire (MDMQ) items measuring Negative Valence, Tense Arousal, and Fatigue
+  
+  - `WHAT` = work sampling item asking to indicate the type of work task performed in the last 10 min
+  
+  - `HOW` = work sampling item asking to indicate the mean of work used in the last 10 min
+  
+  - `WHOM` = work sampling item asking to indicate the people involved in the task
+  
+  - `nPeople` = work sampling item asking to indicate the total number of people present during the task
+  
+  - `d1` - `d4` = Task Demand Scale (TDS) items
+  
+  - `c1` - `c3` = Task Control (TCS) items
+  
+**Demographics** (also included in `RETROdata`)
+
+  - `gender` = participant's gender (`M` or `F`)
+
+  - `age` = participant's age (years)
+  
+  - `job` = participant' job recoded by using ISCO-08 categories
+  
+  - `jobOut` = logical variable equal to `TRUE` for those participants with a job not compatible with our inclusion criteria
+  
+  - `job.sector` = participant's job sector (`Private` or `Public`)
+  
+  - `work.hours` = participant's weekly work hours
+  
+**Inclusion criteria** (also included in `RETROdata`)
+
+  - `noQs` = indicating if the participant filled the preliminary questionnaire (0) or not (1)
+  
+  - `RRate` = participant’s response rate
+  
+<br>
+
+## 5.2. RETROdata
+```{r }
+# selecting and sorting columns
+RETROdata <- RETROdata[,c("ID","gender","age","job","jobOut","job.sector","work.hours",
+                          paste("JAWS",1:12,sep=""),paste("CBI",1:7,sep=""),
+                          paste("d",1:5,sep=""),paste("c",1:5,sep=""),"noQs","respRate")]
+
+str(RETROdata)
+```
+
+<br>
+
+**Data structure**
+  
+  - `ID` = participant's anonymized identification code
+  
+**Demographics** (also included in `ESMdata`)
+
+  - `gender` = participant's gender (`M` or `F`)
+
+  - `age` = participant's age (years)
+  
+  - `job` = participant' job recoded by using ISCO-08 categories
+  
+  - `jobOut` = logical variable equal to `TRUE` for those participants with a job not compatible with our inclusion criteria
+  
+  - `job.sector` = participant's job sector (`Private` or `Public`)
+  
+  - `work.hours` = participant's weekly work hours
+  
+**Retrospective ratings**
+        
+  - `JAWS1` - `JAWS12` = Job-related Affective Wellbeing Scale item responses
+      
+  - `CBI1` - `CBI7` = Copenhagen Burnout Inventory (work-related burnout dimension) item scores
+        
+  - `d1` - `d5` = Quantitative Workload Inventory item scores
+        
+  - `c1` - `c5` = Job Control item scores
+  
+**Inclusion criteria** (also included in `RETROdata`)
+
+  - `noQs` = indicating if the participant filled the preliminary questionnaire (0) or not (1)
+  
+  - `RRate` = participant’s response rate
+
+<br>
+
+# 6. Data export
+
+Finally, we export the two processed datasets in both .RData and CSV format to be used in the main analyses.
+```{r }
+# exporting processed ESMdata
+save(ESMdata,file="S5_processedData/ESM_processed.RData")
+write.csv(ESMdata,"S5_processedData/ESM_processed.csv")
+
+# exporting processed RETROdata
+save(RETROdata,file="S5_processedData/RETRO_processed.RData")
+write.csv(RETROdata,"S5_processedData/RETRO_processed.csv")
+```
+
+<br>
+
+# References {#ref}
+
+- Ganzeboom, H. B. (2010). International standard classification of occupations ISCO-08 with ISEI-08 scores. Version of July, 27, 2010.
+
+- Xiong, H., Huang, Y., Barnes, L. E., & Gerber, M. S. (2016). Sensus: a cross-platform, general-purpose system for mobile crowdsensing in human-subject studies. Proceedings of the 2016 ACM International Joint Conference on Pervasive and Ubiquitous Computing, 415–426. https://doi.org/10.1145/2971648.2971711
+
+<br>
+
+## R packages
