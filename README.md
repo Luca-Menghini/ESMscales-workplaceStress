@@ -14,11 +14,11 @@ Below, we list and describe the full set of supplementary materials. Click on th
 
 - `S3_dataAnalysis`: Reproducible R code&sup2; and generated **[full report](https://Luca-Menghini.github.io/ESMscales-workplaceStress/S3_dataAnalysis/S3_dataAnalysis_fullReport.html)** of the analytical procedures described in the article. The folder also includes shorter PDF reports with details on [multilevel confirmatory factor analysis](https://Luca-Menghini.github.io/ESMscales-workplaceStress/S3_dataAnalysis/S3.1_MCFAdetails.pdf), and a supplementary analysis of [time trends, measurement reactivity, and sensitivity to job task features](https://Luca-Menghini.github.io/ESMscales-workplaceStress/S3_dataAnalysis/S3.2_SensitivityToContextualFactors.pdf) for each scale.
 
-- `S4_scopusSearch` ([available from OSF](https://osf.io/87a9p)): Results of the Scopus search of experience sampling methods studies on job stressors and strain.
+- `S4_scopusSearch` ([available from OSF](https://osf.io/8tcpv)): Results of the Scopus search of experience sampling methods studies on job stressors and strain.
 
-- `S5_processedData` ([available from OSF](https://osf.io/87a9p)): GDPR-compliant processed data generaded by running the `S2` script on the raw data files. These can be used to reproduce the data analysis report in `S3` by using the associated Rmd script.
+- `S5_processedData` ([available from OSF](https://osf.io/87a9p/files/osfstorage)): GDPR-compliant processed data generaded by running the `S2` script on the raw data files. These can be used to reproduce the data analysis report in `S3` by using the associated Rmd script.
 
-- `S6_ESMprotocol&scales` ([available from OSF](https://osf.io/87a9p)): Detailed description of the experience sampling methods protocol used in the study, including the JSON protocol used with the [Sensus mobile application](https://predictive-technology-laboratory.github.io/sensus/), and the evaluated scales (Italian items and English translations).
+- `S6_ESMprotocol&scales` ([available from OSF](https://osf.io/87a9p/files/osfstorage)): Detailed description of the experience sampling methods protocol used in the study, including the JSON protocol used with the [Sensus mobile application](https://predictive-technology-laboratory.github.io/sensus/), and the evaluated scales (Italian items and English translations).
 
 
 ### Notes
