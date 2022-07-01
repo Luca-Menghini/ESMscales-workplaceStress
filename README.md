@@ -3,9 +3,9 @@ The present repository includes some of the supplementary materials of the artic
 
 Menghini, L., Pastore, M., Balducci, C. (2022). Workplace stress in real time: Three parsimonious scales for the experience sampling measurement of stressors and strain at work, accepted for publication in the European Journal of Psychological Assessment.
 
-The present Github repository is associated with the **[Open Science Framework repository osf.io/87a9p/](https://osf.io/87a9p/)**. Here, we included the R code, and the full and brief reports of both data pre-processing and data analysis, whereas the remaining supplementary materials (including the data used in the study) are included in the OSF repository linked above.
+The present Github repository is associated with the **[Open Science Framework repository osf.io/87a9p/](https://osf.io/87a9p/)**. Here, we included the R code, and the full and brief reports of both data pre-processing and data analysis, whereas the remaining supplementary materials (including the data used in the study) are available from OSF.
 
-Below, we list and describe the full set of supplementary materials.
+Below, we list and describe the full set of supplementary materials. Click on the highlighted link to visualize the reports.
 
 ## Supplementary materials
 - `S1_PowerAnalysis`: Reproducible R code&sup1; and generated **[full report](https://Luca-Menghini.github.io/ESMscales-workplaceStress/S1_PowerAnalysis/S1_powerAnalysis_fullReport.html)** of the a priori power analysis of the multilevel confirmatory factor analysis used to evaluate the factor structure of the three scales. A more synthetic PDF report is [available at this link](https://Luca-Menghini.github.io/ESMscales-workplaceStress/S1_PowerAnalysis/S1_powerAnalysis_shortReport.pdf).
