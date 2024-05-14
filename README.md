@@ -1,7 +1,7 @@
 # Workplace stress in real time: Three parsimonious scales for the experience sampling measurement of stressors and strain at work
 The present repository includes some of the supplementary materials of the article:
 
-Menghini, L., Pastore, M., Balducci, C. (2022). Workplace stress in real time: Three parsimonious scales for the experience sampling measurement of stressors and strain at work, accepted for publication in the European Journal of Psychological Assessment.
+Menghini, L., Pastore, M., & Balducci, C. (2023). Workplace Stress in Real Time: Three Parsimonious Scales for the Experience Sampling Measurement of Stressors and Strain at Work. *European Journal of Psychological Assessment, 39*(6), 424–432. https://doi.org/10.1027/1015-5759/a000725 
 
 The present Github repository is associated with the **[Open Science Framework (OSF) repository osf.io/87a9p](https://osf.io/87a9p)**. Here, we included the R code, and the full and brief reports of both data pre-processing and data analysis, whereas the remaining supplementary materials (including the data used in the study) are available from OSF.
 
